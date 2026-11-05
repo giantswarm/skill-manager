@@ -72,12 +72,6 @@ func FromContext(ctx context.Context) (*Identity, bool) {
 	return id, ok && id != nil
 }
 
-// Caller is the caller's String(), or "" without one.
-func Caller(ctx context.Context) string {
-	id, _ := FromContext(ctx)
-	return id.String()
-}
-
 // GitHub is the caller's GitHub identity on the App-pinned registration: the
 // login GET /user answered for the person's GitHub user token muster (or
 // agent-manager, forwarding it) put on the call, and that token.

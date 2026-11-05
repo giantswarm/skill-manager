@@ -90,35 +90,3 @@ func (r *Rule) allows(tag string) bool {
 	}
 	return r.pattern == nil || r.pattern.MatchString(tag)
 }
-
-// Filter is the set of tags a list request asks for; an item matches when it
-// carries any of them.
-type Filter map[string]struct{}
-
-// NewFilter splits every value on commas and normalizes the result, whether
-// the filter came as one comma-joined value or several.
-func NewFilter(values []string) Filter {
-	f := Filter{}
-	for _, v := range values {
-		for _, tag := range strings.Split(v, ",") {
-			if tag = strings.ToLower(strings.TrimSpace(tag)); tag != "" {
-				f[tag] = struct{}{}
-			}
-		}
-	}
-	return f
-}
-
-// Matches reports whether have holds any tag of f; an empty filter matches
-// everything.
-func (f Filter) Matches(have []string) bool {
-	if len(f) == 0 {
-		return true
-	}
-	for _, tag := range have {
-		if _, ok := f[tag]; ok {
-			return true
-		}
-	}
-	return false
-}

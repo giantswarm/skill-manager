@@ -84,24 +84,3 @@ func TestRuleLimits(t *testing.T) {
 	_, err = NewRule([]byte(`[`), 0)
 	assert.Error(t, err)
 }
-
-func TestFilter(t *testing.T) {
-	tests := []struct {
-		name   string
-		values []string
-		have   []string
-		match  bool
-	}{
-		{name: "nil matches everything", values: nil, have: nil, match: true},
-		{name: "only blanks match everything", values: []string{"", " , "}, have: []string{"a"}, match: true},
-		{name: "repeated", values: []string{"x", "B"}, have: []string{"a", "b"}, match: true},
-		{name: "comma-joined, case and spaces ignored", values: []string{"x, A "}, have: []string{"a"}, match: true},
-		{name: "none shared", values: []string{"x"}, have: []string{"a"}},
-		{name: "no tags", values: []string{"x"}, have: nil},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.match, NewFilter(tc.values).Matches(tc.have))
-		})
-	}
-}

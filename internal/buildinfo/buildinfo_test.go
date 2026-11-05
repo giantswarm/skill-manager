@@ -9,7 +9,7 @@ import (
 
 func TestResolve(t *testing.T) {
 	tagged := &debug.BuildInfo{
-		Main: debug.Module{Path: "github.com/giantswarm/workspace-manager", Version: "v1.1.9"},
+		Main: debug.Module{Path: "github.com/giantswarm/skill-manager", Version: "v1.1.9"},
 		Settings: []debug.BuildSetting{
 			{Key: "vcs.revision", Value: "6e3caf2d9c1f4b7a8e2d0c5b6a7f8e9d0c1b2a3f"},
 			{Key: "vcs.time", Value: "2026-09-16T08:00:00Z"},

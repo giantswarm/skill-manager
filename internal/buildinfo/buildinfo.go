@@ -1,4 +1,4 @@
-// Package buildinfo resolves the version workspace-manager reports: what the
+// Package buildinfo resolves the version skill-manager reports: what the
 // build stamped with -ldflags -X when it did, else what the Go toolchain
 // recorded from version control — the tag at HEAD as the module version, the
 // commit and its time — so a binary built from a tagged checkout names its
