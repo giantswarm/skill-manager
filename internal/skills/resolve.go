@@ -26,6 +26,13 @@ var (
 // message names the repository or image and the reason.
 var ErrUnresolvable = errors.New("unresolvable skill reference")
 
+// ErrNotFound marks an ErrUnresolvable whose repository, ref, path or image
+// the source does not know; ErrUpstream one the source failed to answer.
+var (
+	ErrNotFound = errors.New("not found")
+	ErrUpstream = errors.New("upstream failure")
+)
+
 // Resolver pins skill references: a git branch or tag to its head commit, a
 // repository to its default branch, an OCI tag to its digest. It is the
 // composer's path to immutable sources and the migration's.
@@ -98,7 +105,7 @@ func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login str
 	}
 	perm, err := r.gh.permission(ctx, owner, repo, login)
 	if err != nil {
-		return fmt.Errorf("%w: the permission of %s on %s could not be read: %v", ErrUnresolvable, login, repoURL, err)
+		return fmt.Errorf("%w: %w: the permission of %s on %s could not be read: %v", ErrUnresolvable, ErrUpstream, login, repoURL, err)
 	}
 	switch perm {
 	case "admin", "maintain", "write", "triage", "read":
@@ -155,6 +162,29 @@ func (r *Resolver) ClaudeFormatPlugin(ctx context.Context, repoURL, commit, path
 	return false, nil
 }
 
+// PathExists reports whether repoURL has a file or a directory at path at
+// commit; "" is the repository root, which always exists.
+func (r *Resolver) PathExists(ctx context.Context, repoURL, commit, path string) (bool, error) {
+	owner, repo, err := parseRepoURL(repoURL)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrUnresolvable, err)
+	}
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return true, nil
+	}
+	// For a directory GitHub answers its listing whatever the Accept.
+	_, err = r.gh.raw(ctx, owner, repo, path, commit)
+	var api *apiError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &api) && api.status == http.StatusNotFound:
+		return false, nil
+	}
+	return false, r.unresolvable(ctx, repoURL, "path "+path+" at "+commit, err)
+}
+
 func joinPluginPath(dir, file string) string {
 	dir = strings.Trim(dir, "/")
 	if dir == "" {
@@ -164,16 +194,21 @@ func joinPluginPath(dir, file string) string {
 }
 
 // unresolvable explains a failed GitHub lookup: a 404 is a private or missing
-// repository, which without a token cannot be told apart.
+// repository, which without a token cannot be told apart, and a 422 a ref
+// GitHub does not know; both are ErrNotFound, every other failure
+// ErrUpstream.
 func (r *Resolver) unresolvable(ctx context.Context, repoURL, what string, err error) error {
 	var api *apiError
-	if errors.As(err, &api) && api.status == http.StatusNotFound {
+	switch {
+	case errors.As(err, &api) && api.status == http.StatusNotFound:
 		if token, _ := r.gh.tokens.Token(ctx); token == "" {
-			return fmt.Errorf("%w: %s of %s could not be resolved: GitHub answered 404 without a token — the repository is private or does not exist; a private skill repository needs the skills GitHub App installed on it (or a GITHUB_TOKEN that can read it)", ErrUnresolvable, what, repoURL)
+			return fmt.Errorf("%w: %w: %s of %s could not be resolved: GitHub answered 404 without a token — the repository is private or does not exist; a private skill repository needs the skills GitHub App installed on it (or a GITHUB_TOKEN that can read it)", ErrUnresolvable, ErrNotFound, what, repoURL)
 		}
-		return fmt.Errorf("%w: %s of %s could not be resolved: GitHub answered 404 — the repository does not exist, the ref is unknown, or the skills GitHub App is not installed on it", ErrUnresolvable, what, repoURL)
+		return fmt.Errorf("%w: %w: %s of %s could not be resolved: GitHub answered 404 — the repository does not exist, the ref is unknown, or the skills GitHub App is not installed on it", ErrUnresolvable, ErrNotFound, what, repoURL)
+	case errors.As(err, &api) && api.status == http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w: %w: %s of %s could not be resolved: %v", ErrUnresolvable, ErrNotFound, what, repoURL, err)
 	}
-	return fmt.Errorf("%w: %s of %s could not be resolved: %v", ErrUnresolvable, what, repoURL, err)
+	return fmt.Errorf("%w: %w: %s of %s could not be resolved: %v", ErrUnresolvable, ErrUpstream, what, repoURL, err)
 }
 
 // OCIDigest pins an OCI reference: one already carrying a digest is returned
@@ -193,7 +228,11 @@ func (r *Resolver) OCIDigest(ctx context.Context, ref string) (string, error) {
 	}
 	digest, err := r.registry.ManifestDigest(ctx, img.Reference, tag)
 	if err != nil {
-		return "", fmt.Errorf("%w: OCI skill %s could not be resolved to a digest: %v", ErrUnresolvable, ref, err)
+		cause := ErrUpstream
+		if errors.Is(err, oci.ErrNotFound) {
+			cause = ErrNotFound
+		}
+		return "", fmt.Errorf("%w: %w: OCI skill %s could not be resolved to a digest: %v", ErrUnresolvable, cause, ref, err)
 	}
 	img.Digest = digest
 	return img.Pinned(), nil

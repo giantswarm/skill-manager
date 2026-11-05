@@ -117,6 +117,9 @@ func fakeGitHub(t *testing.T) (*httptest.Server, *int) {
 			_, _ = w.Write([]byte("# no frontmatter at all\n"))
 		case "plugins/agent/plugin.json", "plugins/both/plugin.json", "plugins/both/.claude-plugin/plugin.json", "plugins/claude/.claude-plugin/plugin.json":
 			_, _ = w.Write([]byte(`{"name":"p"}`))
+		case "skills/overview", "agent-self-awareness":
+			// A directory: GitHub answers its listing whatever the Accept.
+			_, _ = w.Write([]byte(`[]`))
 		case "plugins/broken/plugin.json":
 			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
 		default:
@@ -480,4 +483,49 @@ func TestAReadOutlivesACallerThatGivesUp(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, res.Repositories[0].Truncated, "a cancelled caller does not truncate the listing")
 	assert.Len(t, res.Repositories[0].Skills, 3)
+}
+
+// A failed lookup says why, so a caller can answer 404 or 502: a repository
+// or ref GitHub does not know is ErrNotFound, any other GitHub failure
+// ErrUpstream, a malformed reference neither.
+func TestResolverTellsMissingRefsFromUpstreamFailures(t *testing.T) {
+	ts, _ := fakeGitHub(t)
+	r := NewResolver(ts.URL, StaticToken("secret"), nil, nil)
+
+	_, err := r.GitHead(t.Context(), "https://github.com/giantswarm/agent-skills", "nope")
+	require.ErrorIs(t, err, ErrUnresolvable)
+	assert.ErrorIs(t, err, ErrNotFound, "an unknown ref")
+	_, err = r.GitHead(t.Context(), "https://github.com/giantswarm/missing", "")
+	assert.ErrorIs(t, err, ErrNotFound, "an unknown repository")
+
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer down.Close()
+	_, err = NewResolver(down.URL, nil, nil, nil).GitHead(t.Context(), "https://github.com/giantswarm/agent-skills", "main")
+	require.ErrorIs(t, err, ErrUnresolvable)
+	assert.ErrorIs(t, err, ErrUpstream)
+	assert.NotErrorIs(t, err, ErrNotFound)
+
+	_, err = r.GitHead(t.Context(), "https://gitlab.com/x/y", "main")
+	require.ErrorIs(t, err, ErrUnresolvable)
+	assert.NotErrorIs(t, err, ErrNotFound)
+	assert.NotErrorIs(t, err, ErrUpstream)
+}
+
+// A path exists when GitHub has a file or a directory there at the commit.
+func TestResolverTellsWhetherAPathExists(t *testing.T) {
+	ts, _ := fakeGitHub(t)
+	r := NewResolver(ts.URL, StaticToken("secret"), nil, nil)
+	repo := "https://github.com/giantswarm/agent-skills"
+	for path, want := range map[string]bool{"agent-self-awareness": true, "/agent-self-awareness/": true, "agent-self-awareness/SKILL.md": true, "gone": false} {
+		got, err := r.PathExists(t.Context(), repo, headCommit, path)
+		require.NoError(t, err, path)
+		assert.Equal(t, want, got, path)
+	}
+	got, err := r.PathExists(t.Context(), repo, tagCommit, "skills/overview")
+	require.NoError(t, err)
+	assert.True(t, got)
+	_, err = r.PathExists(t.Context(), repo, headCommit, "plugins/broken/plugin.json")
+	assert.ErrorIs(t, err, ErrUpstream)
 }
