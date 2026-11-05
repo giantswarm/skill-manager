@@ -99,3 +99,37 @@ func TestServeServiceToken(t *testing.T) {
 	_, err = parse(t).serverConfig()
 	assert.ErrorContains(t, err, "--enable-oauth", "a service token without OAuth guards nothing")
 }
+
+// An environment value that does not parse fails the start, naming it.
+func TestServeRefusesUnparsableEnvironment(t *testing.T) {
+	t.Setenv("SKILL_MANAGER_OAUTH_ENABLED", "yes please")
+	o, envErr := parseServe(t)
+	require.Nil(t, o)
+	assert.ErrorContains(t, envErr, "SKILL_MANAGER_OAUTH_ENABLED")
+
+	t.Setenv("SKILL_MANAGER_OAUTH_ENABLED", "")
+	t.Setenv("SKILL_MANAGER_CACHE_TTL", "five minutes")
+	_, envErr = parseServe(t)
+	assert.ErrorContains(t, envErr, "SKILL_MANAGER_CACHE_TTL")
+}
+
+// The service token is trimmed: a Secret written with a trailing newline
+// still matches.
+func TestServeTrimsTheServiceToken(t *testing.T) {
+	t.Setenv("SKILL_MANAGER_SERVICE_TOKEN", "s3cret\n")
+	cfg, err := parse(t, "--enable-oauth").serverConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "s3cret", cfg.OAuth.ServiceToken)
+}
+
+// parseServe builds the serve command and validates its environment as the
+// start does.
+func parseServe(t *testing.T) (*serveOptions, error) {
+	t.Helper()
+	cmd, o := newServe()
+	require.NoError(t, cmd.Flags().Parse(nil))
+	if err := o.envErr(); err != nil {
+		return nil, err
+	}
+	return o, nil
+}

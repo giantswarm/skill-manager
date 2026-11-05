@@ -38,6 +38,7 @@ type serveOptions struct {
 	githubPinAuth string
 	serviceToken  string
 	ociRegistries string
+	musterServer  string
 
 	oauthEnabled                  bool
 	oauthBaseURL                  string
@@ -49,7 +50,13 @@ type serveOptions struct {
 	oauthTrustedAudiences         string
 	ssoAllowPrivateIPs            bool
 	allowPublicClientRegistration bool
+
+	// envErrs are the environment values that did not parse.
+	envErrs []error
 }
+
+// envErr fails the start on an environment value that did not parse.
+func (o *serveOptions) envErr() error { return errors.Join(o.envErrs...) }
 
 func newServeCmd() *cobra.Command {
 	cmd, _ := newServe()
@@ -72,7 +79,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.listen, "listen", envOr("SKILL_MANAGER_LISTEN", ":8080"), "Listen address (SKILL_MANAGER_LISTEN)")
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("SKILL_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (SKILL_MANAGER_MCP_PATH)")
 	f.StringVar(&o.sources, "sources", envOr("SKILL_MANAGER_SOURCES", ""), "The skill sources: a JSON array of github.com repository URLs and {url, ref, path, readOnly} objects, or comma-separated URLs; ref (branch, tag or commit; empty: the default branch) is what discovery reads and a skill without a ref pins, path the directory scanned, readOnly is reported (SKILL_MANAGER_SOURCES)")
-	f.DurationVar(&o.cacheTTL, "cache-ttl", envDuration("SKILL_MANAGER_CACHE_TTL", 5*time.Minute), "How long a source's discovered skills are reused (SKILL_MANAGER_CACHE_TTL)")
+	f.DurationVar(&o.cacheTTL, "cache-ttl", envDuration(&o.envErrs, "SKILL_MANAGER_CACHE_TTL", 5*time.Minute), "How long a source's discovered skills are reused (SKILL_MANAGER_CACHE_TTL)")
 	f.StringVar(&o.githubAPIURL, "github-api-url", envOr("SKILL_MANAGER_GITHUB_API_URL", server.DefaultGitHubAPIURL), "GitHub REST API base URL: discovery, pinning and the pin's GET /user (SKILL_MANAGER_GITHUB_API_URL)")
 	f.StringVar(&o.githubToken, "github-token", envOr("GITHUB_TOKEN", ""), "Static GitHub token skills are read with; prefer the environment (GITHUB_TOKEN). Mutually exclusive with the GitHub App")
 	f.StringVar(&o.appID, "github-app-id", envOr("SKILL_MANAGER_GITHUB_APP_ID", ""), "ID of the read-only GitHub App skills are read with: installation tokens at the App's rate limit (SKILL_MANAGER_GITHUB_APP_ID)")
@@ -80,17 +87,18 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.appKeyFile, "github-app-private-key-file", envOr("SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE", ""), "PEM private key file of that App (SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE)")
 	f.StringVar(&o.githubPinAuth, "github-authorization-server", envOr("SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER", ""), "Issuer identity of the GitHub App muster pins this server's MCP registration to: the bearer is the person's App user token, verified with GET /user, whose login decides about private repositories, and the IdP ID token arrives in "+server.ForwardedIdentityHeader+"; the REST API takes the same pair. Empty: no caller has a GitHub login and private repositories are refused. Needs --enable-oauth (SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER)")
 	f.StringVar(&o.ociRegistries, "oci-registries", envOr("SKILL_MANAGER_OCI_REGISTRIES", strings.Join(oci.DefaultHosts, ",")), "Comma-separated OCI registry hosts (host or host:port) an OCI skill or plugin may come from; no other registry, and none by IP address, is asked (SKILL_MANAGER_OCI_REGISTRIES)")
+	f.StringVar(&o.musterServer, "muster-server", envOr("SKILL_MANAGER_MUSTER_SERVER", "skill-manager"), "This server's MCPServer name in muster, which a refusal names for core_auth_login when --github-authorization-server is set (SKILL_MANAGER_MUSTER_SERVER)")
 	f.StringVar(&o.serviceToken, "service-token", envOr("SKILL_MANAGER_SERVICE_TOKEN", ""), "A bearer the REST API admits as the platform's own service caller, no person: agent-manager's migrate, which has no caller; no readability check applies to it. Prefer the environment (SKILL_MANAGER_SERVICE_TOKEN). Needs --enable-oauth")
-	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("SKILL_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint and the REST API, validated against Dex (mcp-oauth) (SKILL_MANAGER_OAUTH_ENABLED)")
+	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool(&o.envErrs, "SKILL_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint and the REST API, validated against Dex (mcp-oauth) (SKILL_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("SKILL_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (SKILL_MANAGER_OAUTH_BASE_URL)")
 	f.StringVar(&o.dexIssuerURL, "dex-issuer-url", envOr("DEX_ISSUER_URL", ""), "Dex issuer URL (DEX_ISSUER_URL)")
 	f.StringVar(&o.dexClientID, "dex-client-id", envOr("DEX_CLIENT_ID", ""), "Dex client ID (DEX_CLIENT_ID)")
 	f.StringVar(&o.dexClientSecret, "dex-client-secret", envOr("DEX_CLIENT_SECRET", ""), "Dex client secret; prefer the environment (DEX_CLIENT_SECRET)")
 	f.StringVar(&o.dexCAFile, "dex-ca-file", envOr("DEX_CA_FILE", ""), "PEM CA bundle of a Dex with a private certificate; verifies discovery, token and JWKS calls (DEX_CA_FILE)")
-	f.BoolVar(&o.dexAllowPrivateIP, "allow-private-oauth-urls", envBool("SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS", false), "Let the Dex issuer resolve to a private or loopback address, an in-cluster Dex (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS)")
+	f.BoolVar(&o.dexAllowPrivateIP, "allow-private-oauth-urls", envBool(&o.envErrs, "SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS", false), "Let the Dex issuer resolve to a private or loopback address, an in-cluster Dex (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS)")
 	f.StringVar(&o.oauthTrustedAudiences, "oauth-trusted-audiences", envOr("OAUTH_TRUSTED_AUDIENCES", ""), "Comma-separated OAuth client IDs whose Dex id_tokens are accepted as bearer tokens: the platform client and the audiences muster requires (OAUTH_TRUSTED_AUDIENCES)")
-	f.BoolVar(&o.ssoAllowPrivateIPs, "sso-allow-private-ips", envBool("SSO_ALLOW_PRIVATE_IPS", false), "Let Dex's JWKS endpoint resolve to a private address when validating forwarded tokens (SSO_ALLOW_PRIVATE_IPS)")
-	f.BoolVar(&o.allowPublicClientRegistration, "allow-public-client-registration", envBool("SKILL_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION", false), "Accept unauthenticated dynamic client registration; labs only (SKILL_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION)")
+	f.BoolVar(&o.ssoAllowPrivateIPs, "sso-allow-private-ips", envBool(&o.envErrs, "SSO_ALLOW_PRIVATE_IPS", false), "Let Dex's JWKS endpoint resolve to a private address when validating forwarded tokens (SSO_ALLOW_PRIVATE_IPS)")
+	f.BoolVar(&o.allowPublicClientRegistration, "allow-public-client-registration", envBool(&o.envErrs, "SKILL_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION", false), "Accept unauthenticated dynamic client registration; labs only (SKILL_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION)")
 	return cmd, o
 }
 
@@ -125,7 +133,7 @@ func (o *serveOptions) serverConfig() (server.Config, error) {
 	if o.githubPinAuth != "" && !o.oauthEnabled {
 		return server.Config{}, errors.New("--github-authorization-server needs --enable-oauth: the forwarded IdP ID token is validated by the OAuth resource server")
 	}
-	if o.serviceToken != "" && !o.oauthEnabled {
+	if strings.TrimSpace(o.serviceToken) != "" && !o.oauthEnabled {
 		return server.Config{}, errors.New("--service-token needs --enable-oauth: without it the API admits everyone")
 	}
 	if !o.oauthEnabled {
@@ -143,7 +151,7 @@ func (o *serveOptions) serverConfig() (server.Config, error) {
 		SSOAllowPrivateIPs:            o.ssoAllowPrivateIPs,
 		AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		GitHubAPIURL:                  o.githubAPIURL,
-		ServiceToken:                  o.serviceToken,
+		ServiceToken:                  strings.TrimSpace(o.serviceToken),
 	}
 	if o.githubPinAuth != "" {
 		cfg.OAuth.GitHub = &server.GitHubPin{AuthorizationServer: o.githubPinAuth, APIURL: o.githubAPIURL}
@@ -155,6 +163,9 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	log := slog.Default()
 
 	// A configuration error fails the start, before anything else is built.
+	if err := o.envErr(); err != nil {
+		return err
+	}
 	sources, err := o.parseSources()
 	if err != nil {
 		return err
@@ -184,7 +195,11 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	defer flush(ctx, "metrics", shutdownMetrics, log)
 
 	discoverer := skills.New(skills.Config{Repositories: sources, APIURL: o.githubAPIURL, Tokens: tokens, CacheTTL: o.cacheTTL, Tags: tags.AgentChartRule()}, log)
-	svc := catalog.New(discoverer, skills.NewResolver(o.githubAPIURL, tokens, nil, oci.NewRegistry(splitList(o.ociRegistries), nil)))
+	resolver := skills.NewResolver(o.githubAPIURL, tokens, nil, oci.NewRegistry(splitList(o.ociRegistries), nil))
+	if o.githubPinAuth != "" {
+		resolver.WithSignIn(o.musterServer)
+	}
+	svc := catalog.New(discoverer, resolver)
 	log.Info("skill sources configured", "sources", len(sources), "githubApp", o.appID != "", "githubPin", o.githubPinAuth != "")
 
 	srv, err := server.New(srvCfg, api.NewREST(svc, log), api.NewMCPServer(svc, build.Version), log)
@@ -223,25 +238,31 @@ func envOr(key, def string) string {
 	return def
 }
 
-func envBool(key string, def bool) bool {
+// envBool is key's boolean, def when unset; a value that does not parse is
+// recorded in errs and fails the start.
+func envBool(errs *[]error, key string, def bool) bool {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
 		return def
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s=%q is not a boolean", key, v))
 		return def
 	}
 	return b
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
+// envDuration is key's Go duration, def when unset; a value that does not
+// parse is recorded in errs and fails the start.
+func envDuration(errs *[]error, key string, def time.Duration) time.Duration {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
 		return def
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s=%q is not a Go duration", key, v))
 		return def
 	}
 	return d
