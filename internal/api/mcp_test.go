@@ -1,0 +1,85 @@
+package api
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/skill-manager/internal/catalog"
+	"github.com/giantswarm/skill-manager/internal/catalog/catalogtest"
+	"github.com/giantswarm/skill-manager/internal/skills"
+)
+
+// callTool calls a tool through the MCP server and returns its text and
+// whether it is an error result.
+func callTool(t *testing.T, svc *catalog.Service, name string, args map[string]any) (string, bool) {
+	t.Helper()
+	srv := NewMCPServer(svc, "test")
+	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+	require.NoError(t, err)
+	out, err := json.Marshal(srv.HandleMessage(t.Context(), raw))
+	require.NoError(t, err)
+	var parsed struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	if parsed.Error != nil {
+		return parsed.Error.Message, true
+	}
+	require.NotEmpty(t, parsed.Result.Content, string(out))
+	return parsed.Result.Content[0].Text, parsed.Result.IsError
+}
+
+func TestMCPResolveSkillsPinsTheItems(t *testing.T) {
+	text, isErr := callTool(t, newCatalog(), ToolResolveSkills, map[string]any{
+		"skills":  []any{map[string]any{"name": "x", "path": "skills/x", "git": map[string]any{"url": catalogtest.SkillsRepo}}},
+		"plugins": []any{map[string]any{"oci": map[string]any{"ref": "ghcr.io/giantswarm/skills/kubectl:1.4.0"}}},
+	})
+	require.False(t, isErr, text)
+	var got catalog.Request
+	require.NoError(t, json.Unmarshal([]byte(text), &got))
+	assert.Equal(t, catalog.Request{
+		Skills:  []catalog.Item{{Name: "x", Path: "skills/x", Git: &catalog.Git{URL: catalogtest.SkillsRepo, Commit: catalogtest.TagHead}}},
+		Plugins: []catalog.Item{{OCI: &catalog.OCI{Ref: "ghcr.io/giantswarm/skills/kubectl@" + catalogtest.Digest}}},
+	}, got)
+}
+
+func TestMCPResolveSkillsNamesTheRefusedItem(t *testing.T) {
+	text, isErr := callTool(t, newCatalog(), ToolResolveSkills, map[string]any{
+		"skills": []any{map[string]any{"name": "x", "git": map[string]any{"url": catalogtest.PrivateRepo}}},
+	})
+	require.True(t, isErr)
+	assert.Contains(t, text, "skills[0]")
+	assert.Contains(t, text, "forbidden")
+}
+
+func TestMCPListsSourcesAndSkills(t *testing.T) {
+	var gotSource string
+	var gotRefresh bool
+	svc := catalog.New(catalogtest.Lister{Repos: []skills.Repository{
+		{RepoURL: catalogtest.SkillsRepo, Ref: "v1.2.0", Path: "skills", ReadOnly: true, Commit: catalogtest.TagHead, Skills: []skills.Skill{{Name: "overview", Path: "skills/overview"}}},
+	}, Observe: func(source string, refresh bool) { gotSource, gotRefresh = source, refresh }}, &catalogtest.Pinner{})
+
+	text, isErr := callTool(t, svc, ToolListSkillSources, nil)
+	require.False(t, isErr, text)
+	assert.JSONEq(t, `{"sources":[{"url":"`+catalogtest.SkillsRepo+`","ref":"v1.2.0","path":"skills","readOnly":true,"commit":"`+catalogtest.TagHead+`"}]}`, text)
+
+	text, isErr = callTool(t, svc, ToolListSkills, map[string]any{"source": catalogtest.SkillsRepo, "refresh": true})
+	require.False(t, isErr, text)
+	assert.Equal(t, catalogtest.SkillsRepo, gotSource)
+	assert.True(t, gotRefresh)
+	var res skills.Result
+	require.NoError(t, json.Unmarshal([]byte(text), &res))
+	require.Len(t, res.Repositories, 1)
+	assert.Equal(t, "overview", res.Repositories[0].Skills[0].Name)
+}

@@ -1,12 +1,20 @@
 # The repository owns this file: devctl creates it when it is missing and
 # afterwards only adds the linters it requires (gosec, goconst) to
 # linters.enable when they are neither enabled nor disabled.
+#
+# goconst is tuned as in workspace-manager and agent-manager, to flag genuine
+# production-code duplication only: the defaults flag repeated test fixtures.
 version: "2"
 
 linters:
   enable:
     - gosec
     - goconst
+  settings:
+    goconst:
+      min-len: 5
+      min-occurrences: 5
+      ignore-tests: true
 
 issues:
   max-issues-per-linter: 0

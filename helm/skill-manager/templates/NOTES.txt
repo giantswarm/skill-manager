@@ -1,0 +1,19 @@
+skill-manager is running.
+
+  MCP : http://{{ include "skill-manager.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}{{ .Values.mcp.path }}
+  REST: http://{{ include "skill-manager.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/v1
+{{- if .Values.oauth.enabled }}
+
+Every call needs a Dex token whose audience is one of {{ include "skill-manager.oauthTrustedAudiences" . | quote }}.
+{{- else }}
+
+WARNING: oauth.enabled is off: the API admits everyone, and no caller can read a private repository.
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+
+The NetworkPolicy admits the release namespace{{ with .Values.networkPolicy.ingressNamespaces }} and {{ join ", " . }}{{ end }} only: muster's, agent-manager's and the portal's namespaces must be among them.
+{{- end }}
+{{- if gt (int .Values.replicaCount) 1 }}
+
+With {{ .Values.replicaCount }} replicas, tokens this server issues itself live in one replica's memory; forwarded Dex tokens work on every replica.
+{{- end }}
