@@ -53,28 +53,37 @@ func readOnly() mcp.ToolOption {
 	}
 }
 
+// prop is a JSON Schema property of type typ, described when desc is set.
+func prop(typ, desc string) map[string]any {
+	p := map[string]any{"type": typ}
+	if desc != "" {
+		p["description"] = desc
+	}
+	return p
+}
+
 // itemSchema is one skill or plugin of resolve_skills.
 var itemSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"name": map[string]any{"type": "string"},
-		"path": map[string]any{"type": "string", "description": "Directory in the repository; empty is its root"},
+		"name": prop("string", ""),
+		"path": prop("string", "Directory in the repository; empty is its root"),
 		"git": map[string]any{
 			"type":     "object",
 			"required": []string{"url"},
 			"properties": map[string]any{
-				"url":    map[string]any{"type": "string", "description": "https://github.com/<owner>/<repo>"},
-				"ref":    map[string]any{"type": "string", "description": "Branch, tag or commit; empty: the ref of the source holding path, else the default branch"},
-				"commit": map[string]any{"type": "string", "description": "Full commit id to keep instead of a ref"},
+				"url":    prop("string", "https://github.com/<owner>/<repo>"),
+				"ref":    prop("string", "Branch, tag or commit; empty: the ref of the source holding path, else the default branch"),
+				"commit": prop("string", "Full commit id to keep instead of a ref"),
 			},
 		},
 		"oci": map[string]any{
 			"type":       "object",
 			"required":   []string{"ref"},
-			"properties": map[string]any{"ref": map[string]any{"type": "string", "description": "<registry>/<repository>[:<tag>|@sha256:<digest>]"}},
+			"properties": map[string]any{"ref": prop("string", "<registry>/<repository>[:<tag>|@sha256:<digest>]")},
 		},
-		"skills":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "A plugin's skill selection, passed through"},
-		"claudeFormat": map[string]any{"type": "boolean", "description": "Plugins: true refuses one that is not a Claude Code plugin"},
+		"skills":       map[string]any{"type": "array", "items": prop("string", ""), "description": "A plugin's skill selection, passed through"},
+		"claudeFormat": prop("boolean", "Plugins: true refuses one that is not a Claude Code plugin"),
 	},
 }
 

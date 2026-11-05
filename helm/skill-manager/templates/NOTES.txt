@@ -1,0 +1,8 @@
+skill-manager is running.
+
+  MCP : http://{{ include "skill-manager.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}{{ .Values.mcp.path }}
+  REST: http://{{ include "skill-manager.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/v1
+{{- if .Values.oauth.enabled }}
+
+Every call needs a Dex token whose audience is one of {{ include "skill-manager.oauthTrustedAudiences" . | quote }}.
+{{- end }}

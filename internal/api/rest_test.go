@@ -31,7 +31,10 @@ func serveREST(t *testing.T, svc *catalog.Service) *httptest.Server {
 
 func post(t *testing.T, url, body string) (int, map[string]any) {
 	t.Helper()
-	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	var out map[string]any

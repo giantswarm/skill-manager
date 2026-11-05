@@ -1,0 +1,251 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skill-manager.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skill-manager.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "skill-manager.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "skill-manager.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "skill-manager.serviceAccountName" . }}
+      {{- /* skill-manager calls no Kubernetes API. */}}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --listen=:8080
+            - --mcp-path={{ .Values.mcp.path }}
+            {{- with .Values.sources }}
+            - {{ printf "--sources=%s" (toJson .) | quote }}
+            {{- end }}
+            - --cache-ttl={{ .Values.cacheTTL }}
+            - --github-api-url={{ .Values.github.apiUrl }}
+            {{- if .Values.github.app.secretName }}
+            {{- if .Values.github.tokenSecret.name }}
+            {{- fail "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential" }}
+            {{- end }}
+            - --github-app-private-key-file=/etc/skill-manager/github-app/private-key
+            {{- end }}
+            {{- if .Values.oauth.enabled }}
+            - --enable-oauth=true
+            - --oauth-base-url={{ include "skill-manager.oauthBaseURL" . }}
+            - --dex-issuer-url={{ include "skill-manager.oauthDexIssuerURL" . }}
+            - --dex-client-id={{ include "skill-manager.oauthDexClientID" . }}
+            {{- with include "skill-manager.oauthTrustedAudiences" . }}
+            - --oauth-trusted-audiences={{ . }}
+            {{- end }}
+            {{- if .Values.oauth.dex.allowPrivateURLs }}
+            - --allow-private-oauth-urls=true
+            {{- end }}
+            {{- if include "skill-manager.oauthDexCASecretName" . }}
+            - --dex-ca-file=/etc/skill-manager/idp-ca/{{ include "skill-manager.oauthDexCASecretKey" . }}
+            {{- end }}
+            {{- if .Values.oauth.sso.allowPrivateIPs }}
+            - --sso-allow-private-ips=true
+            {{- end }}
+            {{- if .Values.oauth.allowPublicClientRegistration }}
+            - --allow-public-client-registration=true
+            {{- end }}
+            {{- if .Values.muster.mcpServer.auth.github.enabled }}
+            - --github-authorization-server={{ .Values.muster.mcpServer.auth.github.authorizationServer.issuer }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.logging.verbose }}
+            - --verbose
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- /*
+          The metrics exporter env below always contributes at least one
+          entry (prometheus or none), so this block is unconditional.
+          */}}
+          env:
+            {{- if .Values.oauth.enabled }}
+            - name: DEX_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skill-manager.oauthSecretName" . }}
+                  key: dex-client-secret
+            {{- with .Values.serviceToken.secretName }}
+            - name: SKILL_MANAGER_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.serviceToken.key }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.github.app.secretName }}
+            - name: SKILL_MANAGER_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: app-id
+            - name: SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: installation-id
+            {{- end }}
+            {{- with .Values.github.tokenSecret.name }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.github.tokenSecret.key }}
+            {{- end }}
+            {{- with .Values.observability.otel }}
+            {{- if .endpoint }}
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .protocol | default "grpc" | quote }}
+            {{- with .headers }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .sampler }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .samplerArg }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ . | quote }}
+            {{- end }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.namespace.name=$(K8S_NAMESPACE),k8s.pod.name=$(K8S_POD_NAME),k8s.node.name=$(K8S_NODE_NAME){{- with .resourceAttributes }},{{ . }}{{- end }}"
+            {{- end }}
+            {{- end }}
+            {{- if .Values.observability.metrics.enabled }}
+            - name: OTEL_METRICS_EXPORTER
+              value: prometheus
+            - name: OTEL_EXPORTER_PROMETHEUS_HOST
+              value: "0.0.0.0"
+            - name: OTEL_EXPORTER_PROMETHEUS_PORT
+              value: {{ .Values.observability.metrics.port | quote }}
+            {{- else }}
+            - name: OTEL_METRICS_EXPORTER
+              value: none
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.observability.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.observability.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          # Up to 5m30s to serve /healthz: building the Dex provider waits up to
+          # 5 minutes for an unavailable Dex, and liveness only starts after this.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 33
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- $idpCA := "" }}
+          {{- if .Values.oauth.enabled }}{{ $idpCA = include "skill-manager.oauthDexCASecretName" . }}{{ end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.github.app.secretName }}
+            - name: github-app
+              mountPath: /etc/skill-manager/github-app
+              readOnly: true
+            {{- end }}
+            {{- if $idpCA }}
+            - name: idp-ca
+              mountPath: /etc/skill-manager/idp-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.github.app.secretName }}
+        - name: github-app
+          secret:
+            secretName: {{ . }}
+            items:
+              - key: private-key
+                path: private-key
+        {{- end }}
+        {{- if $idpCA }}
+        - name: idp-ca
+          secret:
+            secretName: {{ $idpCA }}
+            items:
+              - key: {{ include "skill-manager.oauthDexCASecretKey" . }}
+                path: {{ include "skill-manager.oauthDexCASecretKey" . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

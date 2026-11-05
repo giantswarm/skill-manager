@@ -1,0 +1,106 @@
+# The Deployment: the sources as one JSON flag, one GitHub credential, OAuth
+# with the GitHub pin, and the service token.
+#
+# Run with: make helm-test (helm unittest helm/skill-manager)
+suite: deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: skill-manager
+  namespace: agent-platform
+tests:
+  - it: passes the sources as JSON, URLs and objects alike
+    set:
+      sources:
+        - url: https://github.com/giantswarm/agent-platform
+          ref: v4.180.0
+          path: skills
+          readOnly: true
+        - https://github.com/giantswarm/agent-skills
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: '--sources=[{"path":"skills","readOnly":true,"ref":"v4.180.0","url":"https://github.com/giantswarm/agent-platform"},"https://github.com/giantswarm/agent-skills"]'
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cache-ttl=5m
+
+  - it: passes no sources by default and calls no Kubernetes API
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --sources=[]
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: reads skills with the GitHub App from its Secret
+    set:
+      github:
+        app:
+          secretName: skills-app
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-app-private-key-file=/etc/skill-manager/github-app/private-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SKILL_MANAGER_GITHUB_APP_ID
+            valueFrom:
+              secretKeyRef:
+                name: skills-app
+                key: app-id
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: github-app
+            secret:
+              secretName: skills-app
+              items:
+                - key: private-key
+                  path: private-key
+
+  - it: refuses the App and a token together
+    set:
+      github:
+        app:
+          secretName: skills-app
+        tokenSecret:
+          name: skills-token
+    asserts:
+      - failedTemplate:
+          errorMessage: "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential"
+
+  - it: with OAuth, the GitHub pin and the service token
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+      muster:
+        mcpServer:
+          auth:
+            github:
+              enabled: true
+      serviceToken:
+        secretName: skill-manager-service
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-oauth=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-authorization-server=https://github.com/apps/giantswarm-agent-manager
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SKILL_MANAGER_SERVICE_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: skill-manager-service
+                key: token
