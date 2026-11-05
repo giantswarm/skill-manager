@@ -1,13 +1,6 @@
 package oci_test
 
 import (
-	"context"
-	"encoding/base64"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,16 +9,6 @@ import (
 	"github.com/giantswarm/skill-manager/internal/oci"
 	"github.com/giantswarm/skill-manager/internal/oci/ocitest"
 )
-
-func TestParseChartURL(t *testing.T) {
-	ref, err := oci.ParseChartURL("oci://gsoci.azurecr.io/charts/giantswarm/agent")
-	require.NoError(t, err)
-	assert.Equal(t, "gsoci.azurecr.io", ref.Host)
-	assert.Equal(t, "charts/giantswarm/agent", ref.Repository)
-	assert.Equal(t, "agent", ref.Name())
-	_, err = oci.ParseChartURL("https://gsoci.azurecr.io/charts/giantswarm/agent")
-	assert.Error(t, err)
-}
 
 func TestParseImageReference(t *testing.T) {
 	digest := "sha256:5b0bcabd1ed22e9fb1310cf6c2dec7cdef19f0ad69efa1f392e94a4333501270"
@@ -51,132 +34,71 @@ func TestParseImageReference(t *testing.T) {
 	}
 }
 
-func TestRegistryResolvesDigestsAndReadsChartFiles(t *testing.T) {
-	f := ocitest.New(t, "charts/giantswarm/agent")
-	f.Tags = []string{"0.6.1", "1.0.0"}
-	f.Files["1.0.0"] = map[string]string{"Chart.yaml": "name: agent\nversion: 1.0.0\n", "values.schema.json": `{"type":"object"}`}
-	reg := oci.NewRegistry(nil)
-	ctx := context.Background()
 
-	tags, err := reg.ListTags(ctx, f.Reference())
+// A tag of an allowed registry resolves to its digest; the bearer is
+// fetched once.
+func TestRegistryResolvesADigest(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	r := oci.NewRegistry([]string{f.Host()}, f.Client())
+	got, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"0.6.1", "1.0.0"}, tags)
+	assert.Equal(t, ocitest.Digest("1.4.0"), got)
+	_, err = r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), f.TokenHits.Load(), "the bearer is cached")
 
-	digest, err := reg.ManifestDigest(ctx, f.Reference(), "1.0.0")
-	require.NoError(t, err)
-	assert.Equal(t, ocitest.Digest("1.0.0"), digest, "the HEAD's Docker-Content-Digest is the pin")
-	_, err = reg.ManifestDigest(ctx, f.Reference(), "missing")
-	assert.Error(t, err)
-
-	raw, err := reg.ReadChartFile(ctx, f.Reference(), "1.0.0", "values.schema.json")
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"object"}`, string(raw))
-	assert.Equal(t, 1, f.TokenHits, "the anonymous token is cached across requests")
+	_, err = r.ManifestDigest(t.Context(), f.Reference(), "9.9.9")
+	assert.ErrorIs(t, err, oci.ErrNotFound)
 }
 
-func TestImageLabelsReadsTheConfigOfAnIndexsFirstImage(t *testing.T) {
-	const (
-		index       = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-		attestation = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-		amd64       = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-		config      = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
-		single      = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
-	)
-	docs := map[string]any{
-		"/v2/tools/go/manifests/" + index: map[string]any{"manifests": []any{
-			map[string]any{"digest": attestation, "platform": map[string]any{"os": "unknown"}},
-			map[string]any{"digest": amd64, "platform": map[string]any{"os": "linux", "architecture": "amd64"}},
-		}},
-		"/v2/tools/go/manifests/" + amd64:  map[string]any{"config": map[string]any{"digest": config}},
-		"/v2/tools/go/manifests/" + single: map[string]any{"config": map[string]any{"digest": config}},
-		"/v2/tools/go/blobs/" + config:     map[string]any{"config": map[string]any{"Labels": map[string]string{"io.giantswarm.toolchain.name": "go"}}},
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		doc, ok := docs[r.URL.Path]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(doc)
-	}))
-	t.Cleanup(srv.Close)
-	ref := oci.Reference{Host: strings.TrimPrefix(srv.URL, "http://"), Repository: "tools/go", Insecure: true}
-	reg := oci.NewRegistry(nil)
+// Only allowed registries are asked, and never by an IP address.
+func TestRegistryAsksOnlyAllowedHosts(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	r := oci.NewRegistry([]string{"gsoci.azurecr.io"}, f.Client())
+	_, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.ErrorIs(t, err, oci.ErrHostNotAllowed)
+	assert.Zero(t, f.TokenHits.Load(), "nothing was asked")
 
-	for _, digest := range []string{index, single} {
-		labels, err := reg.ImageLabels(t.Context(), ref, digest)
-		require.NoError(t, err, digest)
-		assert.Equal(t, map[string]string{"io.giantswarm.toolchain.name": "go"}, labels, digest)
-	}
-	_, err := reg.ImageLabels(t.Context(), ref, "sha256:6666666666666666666666666666666666666666666666666666666666666666")
-	require.ErrorIs(t, err, oci.ErrNotFound)
+	ipRef := f.Reference()
+	ipRef.Host = "127.0.0.1" + ipRef.Host[len("localhost"):]
+	r = oci.NewRegistry([]string{ipRef.Host}, f.Client())
+	_, err = r.ManifestDigest(t.Context(), ipRef, "1.4.0")
+	assert.ErrorIs(t, err, oci.ErrHostNotAllowed, "an IP literal is refused even when listed")
 }
 
-func TestRegistryAsksAPrivateRegistrysTokenWithItsCredentials(t *testing.T) {
-	f := ocitest.New(t, "giantswarm/agent-toolchains-lab/lint1")
-	f.Tags = []string{"0.1.0"}
-	f.Credentials = &oci.Basic{Username: "puller", Password: "secret"}
-	ctx := context.Background()
-
-	_, err := oci.NewRegistry(nil).ManifestDigest(ctx, f.Reference(), "0.1.0")
-	require.Error(t, err, "anonymously the token endpoint refuses")
-
-	reg := oci.NewRegistry(nil).WithCredentials(map[string]oci.Basic{f.Host(): *f.Credentials})
-	digest, err := reg.ManifestDigest(ctx, f.Reference(), "0.1.0")
-	require.NoError(t, err)
-	assert.Equal(t, ocitest.Digest("0.1.0"), digest)
+// A token realm elsewhere than the registry or another allowed host is not
+// followed.
+func TestRegistryFollowsOnlyAllowedRealms(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	f.Realm = "http://metadata.internal/token"
+	r := oci.NewRegistry([]string{f.Host()}, f.Client())
+	_, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.ErrorIs(t, err, oci.ErrHostNotAllowed)
+	assert.Contains(t, err.Error(), "realm")
 }
 
-func TestRegistryCachesTokensPerHost(t *testing.T) {
-	a := ocitest.New(t, "giantswarm/agent-toolchains/go")
-	b := ocitest.New(t, "giantswarm/agent-toolchains/go")
-	a.Tags, b.Tags = []string{"0.1.0"}, []string{"0.1.0"}
-	reg := oci.NewRegistry(nil)
-	ctx := context.Background()
-	for _, f := range []*ocitest.Registry{a, b} {
-		_, err := reg.ManifestDigest(ctx, f.Reference(), "0.1.0")
-		require.NoError(t, err)
-	}
-	assert.Equal(t, 1, a.TokenHits)
-	assert.Equal(t, 1, b.TokenHits, "the same repository on another host has a token of its own")
+// A registry's answer body never reaches the error.
+func TestRegistryErrorsCarryNoUpstreamBody(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	f.FailBody = "internal-secret-detail"
+	r := oci.NewRegistry([]string{f.Host()}, f.Client())
+	_, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+	assert.NotContains(t, err.Error(), "internal-secret-detail")
 }
 
-func TestLoadDockerConfig(t *testing.T) {
-	path := t.TempDir() + "/config.json"
-	require.NoError(t, os.WriteFile(path, []byte(`{"auths":{
-		"gsociprivate.azurecr.io":{"auth":"`+base64.StdEncoding.EncodeToString([]byte("puller:pa:ss"))+`"},
-		"https://registry.example.io/v1/":{"username":"u","password":"p"}}}`), 0o600))
-	creds, err := oci.LoadDockerConfig(path)
-	require.NoError(t, err)
-	assert.Equal(t, map[string]oci.Basic{
-		"gsociprivate.azurecr.io": {Username: "puller", Password: "pa:ss"},
-		"registry.example.io":     {Username: "u", Password: "p"},
-	}, creds)
-
-	for name, body := range map[string]string{ // #nosec G101 -- malformed Docker config fixtures, no credentials
-		"not json":    `auths`,
-		"no password": `{"auths":{"r.io":{"username":"u"}}}`,
-		"bad auth":    `{"auths":{"r.io":{"auth":"!!"}}}`,
-	} {
-		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
-		_, err := oci.LoadDockerConfig(path)
-		assert.Error(t, err, name)
-	}
-}
-
-func TestRegistrySendsCredentialsOnlyToItsOwnRealm(t *testing.T) {
-	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _, ok := r.BasicAuth()
-		assert.False(t, ok, "no credentials reach another host")
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	t.Cleanup(elsewhere.Close)
-	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Www-Authenticate", `Bearer realm="`+elsewhere.URL+`/token",service="x"`)
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	t.Cleanup(reg.Close)
-	ref := oci.Reference{Host: strings.TrimPrefix(reg.URL, "http://"), Repository: "a/b", Insecure: true}
-	_, err := oci.NewRegistry(nil).WithCredentials(map[string]oci.Basic{ref.Host: {Username: "u", Password: "p"}}).ManifestDigest(context.Background(), ref, "1")
-	require.ErrorContains(t, err, "not on its own host")
+// The default client dials public addresses only: an allowed name that
+// resolves to loopback is refused.
+func TestRegistryDefaultClientRefusesPrivateAddresses(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	r := oci.NewRegistry([]string{f.Host()}, nil)
+	_, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a public address")
 }

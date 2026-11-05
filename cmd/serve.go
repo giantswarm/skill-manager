@@ -18,6 +18,7 @@ import (
 
 	"github.com/giantswarm/skill-manager/internal/api"
 	"github.com/giantswarm/skill-manager/internal/catalog"
+	"github.com/giantswarm/skill-manager/internal/oci"
 	"github.com/giantswarm/skill-manager/internal/server"
 	"github.com/giantswarm/skill-manager/internal/skills"
 	"github.com/giantswarm/skill-manager/internal/tags"
@@ -36,6 +37,7 @@ type serveOptions struct {
 	appKeyFile    string
 	githubPinAuth string
 	serviceToken  string
+	ociRegistries string
 
 	oauthEnabled                  bool
 	oauthBaseURL                  string
@@ -77,6 +79,7 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.appInstall, "github-app-installation-id", envOr("SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID", ""), "Installation ID of that App (SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID)")
 	f.StringVar(&o.appKeyFile, "github-app-private-key-file", envOr("SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE", ""), "PEM private key file of that App (SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE)")
 	f.StringVar(&o.githubPinAuth, "github-authorization-server", envOr("SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER", ""), "Issuer identity of the GitHub App muster pins this server's MCP registration to: the bearer is the person's App user token, verified with GET /user, whose login decides about private repositories, and the IdP ID token arrives in "+server.ForwardedIdentityHeader+"; the REST API takes the same pair. Empty: no caller has a GitHub login and private repositories are refused. Needs --enable-oauth (SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER)")
+	f.StringVar(&o.ociRegistries, "oci-registries", envOr("SKILL_MANAGER_OCI_REGISTRIES", strings.Join(oci.DefaultHosts, ",")), "Comma-separated OCI registry hosts (host or host:port) an OCI skill or plugin may come from; no other registry, and none by IP address, is asked (SKILL_MANAGER_OCI_REGISTRIES)")
 	f.StringVar(&o.serviceToken, "service-token", envOr("SKILL_MANAGER_SERVICE_TOKEN", ""), "A bearer the REST API admits as the platform's own service caller, no person: agent-manager's migrate, which has no caller; no readability check applies to it. Prefer the environment (SKILL_MANAGER_SERVICE_TOKEN). Needs --enable-oauth")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool("SKILL_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint and the REST API, validated against Dex (mcp-oauth) (SKILL_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("SKILL_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (SKILL_MANAGER_OAUTH_BASE_URL)")
@@ -181,7 +184,7 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	defer flush(ctx, "metrics", shutdownMetrics, log)
 
 	discoverer := skills.New(skills.Config{Repositories: sources, APIURL: o.githubAPIURL, Tokens: tokens, CacheTTL: o.cacheTTL, Tags: tags.AgentChartRule()}, log)
-	svc := catalog.New(discoverer, skills.NewResolver(o.githubAPIURL, tokens, nil, nil))
+	svc := catalog.New(discoverer, skills.NewResolver(o.githubAPIURL, tokens, nil, oci.NewRegistry(splitList(o.ociRegistries), nil)))
 	log.Info("skill sources configured", "sources", len(sources), "githubApp", o.appID != "", "githubPin", o.githubPinAuth != "")
 
 	srv, err := server.New(srvCfg, api.NewREST(svc, log), api.NewMCPServer(svc, build.Version), log)

@@ -325,7 +325,7 @@ func TestResolverPinsOCITags(t *testing.T) {
 	f := ocitest.New(t, "giantswarm/skills/kubectl")
 	f.Tags = []string{"1.4.0", "latest"}
 	ctx := context.Background()
-	r := NewResolver("", nil, nil, oci.NewRegistry(nil))
+	r := NewResolver("", nil, nil, oci.NewRegistry([]string{f.Host()}, f.Client()))
 	insecure := func(ref string) string { return f.Host() + "/" + f.Repo + ref }
 
 	// The fake speaks plain HTTP; ParseImageReference yields a secure
@@ -338,6 +338,9 @@ func TestResolverPinsOCITags(t *testing.T) {
 	assert.Equal(t, insecure("@"+ocitest.Digest("latest")), pinned, "no tag means latest")
 	_, err = r.resolveInsecure(ctx, insecure(":missing"))
 	require.ErrorIs(t, err, ErrUnresolvable)
+	_, err = r.OCIDigest(ctx, "registry.example.io/skills/kubectl:1.4.0")
+	require.ErrorIs(t, err, ErrUnresolvable)
+	assert.ErrorIs(t, err, ErrNotAllowed, "a registry not on the allowlist")
 
 	digest := "sha256:5b0bcabd1ed22e9fb1310cf6c2dec7cdef19f0ad69efa1f392e94a4333501270"
 	pinned, err = r.OCIDigest(ctx, "ghcr.io/giantswarm/skills/kubectl:1.4.0@"+digest)

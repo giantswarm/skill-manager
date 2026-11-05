@@ -31,6 +31,9 @@ var ErrUnresolvable = errors.New("unresolvable skill reference")
 var (
 	ErrNotFound = errors.New("not found")
 	ErrUpstream = errors.New("upstream failure")
+	// ErrNotAllowed marks an ErrUnresolvable whose source skill-manager may
+	// not ask (an OCI registry off the allowlist).
+	ErrNotAllowed = errors.New("not allowed")
 )
 
 // Resolver pins skill references: a git branch or tag to its head commit, a
@@ -49,10 +52,11 @@ type Resolver struct {
 var ErrNotReadable = errors.New("skill repository not readable")
 
 // NewResolver builds a resolver for the GitHub API at apiURL (tokens nil for
-// anonymous) and any OCI registry. registry may be nil.
+// anonymous) and the OCI registries registry allows; nil allows
+// oci.DefaultHosts.
 func NewResolver(apiURL string, tokens TokenSource, client *http.Client, registry *oci.Registry) *Resolver {
 	if registry == nil {
-		registry = oci.NewRegistry(client)
+		registry = oci.NewRegistry(nil, nil)
 	}
 	return &Resolver{gh: newGitHub(apiURL, tokens, client), registry: registry, access: map[string]accessEntry{}}
 }
@@ -229,8 +233,11 @@ func (r *Resolver) OCIDigest(ctx context.Context, ref string) (string, error) {
 	digest, err := r.registry.ManifestDigest(ctx, img.Reference, tag)
 	if err != nil {
 		cause := ErrUpstream
-		if errors.Is(err, oci.ErrNotFound) {
+		switch {
+		case errors.Is(err, oci.ErrNotFound):
 			cause = ErrNotFound
+		case errors.Is(err, oci.ErrHostNotAllowed):
+			cause = ErrNotAllowed
 		}
 		return "", fmt.Errorf("%w: %w: OCI skill %s could not be resolved to a digest: %v", ErrUnresolvable, cause, ref, err)
 	}
