@@ -156,10 +156,13 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	// The listener first: requests in flight finish with the OAuth store
+	// they validate against still open.
+	err := s.http.Shutdown(shutdownCtx)
 	if s.oauth != nil {
 		s.oauth.shutdown(shutdownCtx)
 	}
-	if err := s.http.Shutdown(shutdownCtx); err != nil {
+	if err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	s.log.Info("server stopped")

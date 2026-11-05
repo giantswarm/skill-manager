@@ -256,24 +256,24 @@ func (o *oauthRuntime) protect(next http.Handler) http.Handler {
 // bearer is verified first and the forwarded ID token is what mcp-oauth
 // validates.
 func (o *oauthRuntime) protectMCP(next http.Handler) http.Handler {
-	h := o.protect(next)
 	if o.github != nil {
-		return o.github.protect(h)
+		return o.github.protect(o.protect, next)
 	}
-	return h
+	return o.protect(next)
 }
 
 // protectREST is protect for the REST API: the service token is the
-// platform's own caller; a request that carries ForwardedIdentityHeader is
+// platform's own caller on POST /v1/resolve, and nowhere else; a request that carries ForwardedIdentityHeader is
 // the pair agent-manager forwards on its GitHub registration, the person's
 // GitHub user token as the bearer and their ID token beside it, and goes
 // through GET /user first; any other carries the ID token as its bearer.
 func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 	plain := o.protect(next)
-	pinned := o.restGitHub.protect(plain)
+	pinned := o.restGitHub.protect(o.protect, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case o.cfg.ServiceToken != "" && subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(o.cfg.ServiceToken)) == 1:
+		case o.cfg.ServiceToken != "" && r.Method == http.MethodPost && r.URL.Path == "/v1/resolve" &&
+			subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(o.cfg.ServiceToken)) == 1:
 			ctx := identity.ContextWith(identity.ContextWithService(r.Context()), &identity.Identity{Subject: "service", Source: identity.SourceService})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		case r.Header.Get(ForwardedIdentityHeader) != "":
@@ -331,7 +331,7 @@ func (o *oauthRuntime) refuse(w http.ResponseWriter, r *http.Request, id *identi
 	}
 	o.log.Warn("request refused: "+reason, attrs...)
 	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="`+headerQuotedString(reason)+`"`)
-	http.Error(w, "unauthorized: "+reason, http.StatusUnauthorized)
+	writeError(w, http.StatusUnauthorized, "unauthorized: "+reason)
 }
 
 // untrustedAudience is the aud claim of bearer when bearer is a JWT — the

@@ -99,10 +99,20 @@ func (g *gitHubGuard) signIn() string {
 	return "connect skill-manager in muster (core_auth_login server=skill-manager, the consent of " + g.pin.AuthorizationServer + "), then call again"
 }
 
-// protect admits a request whose bearer GitHub accepts and that carries the
-// forwarded ID token; next sees the ID token as the bearer and the GitHub
-// identity on the context.
-func (g *gitHubGuard) protect(next http.Handler) http.Handler {
+// githubTokenKey carries the GitHub bearer from swap to check.
+type githubTokenKey struct{}
+
+// protect admits a request that carries the forwarded ID token and whose
+// bearer GitHub accepts. The ID token is validated first (inner, mcp-oauth
+// with the ID token as the bearer), so GitHub is never asked about a caller
+// the IdP refuses; next sees the GitHub identity on the context.
+func (g *gitHubGuard) protect(inner func(http.Handler) http.Handler, next http.Handler) http.Handler {
+	return g.swap(inner(g.check(next)))
+}
+
+// swap moves the GitHub bearer aside and puts the forwarded ID token in its
+// place.
+func (g *gitHubGuard) swap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		if token == "" {
@@ -114,20 +124,30 @@ func (g *gitHubGuard) protect(next http.Handler) http.Handler {
 			g.refuse(w, errInvalidToken, "no "+ForwardedIdentityHeader+" header: this registration needs your platform identity beside your GitHub token, which muster forwards only with auth.forwardIdentity: true on the MCPServer")
 			return
 		}
+		r = r.Clone(context.WithValue(r.Context(), githubTokenKey{}, token))
+		r.Header.Set("Authorization", "Bearer "+idToken)
+		r.Header.Del(ForwardedIdentityHeader)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// check verifies the GitHub bearer swap set aside with GET /user. GitHub's
+// 401 is the caller's (401); any other failure, its 403 rate limit
+// included, is GitHub's (502).
+func (g *gitHubGuard) check(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, _ := r.Context().Value(githubTokenKey{}).(string)
 		login, status, err := g.verify(r.Context(), token)
 		switch {
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		case status == http.StatusUnauthorized:
 			g.refuse(w, errInvalidToken, fmt.Sprintf("GitHub refused the bearer token (%d): %s", status, g.signIn()))
 			return
 		case err != nil:
 			g.log.Warn("GitHub bearer verification failed", "error", err)
-			http.Error(w, "could not verify the bearer token with GitHub: "+err.Error(), http.StatusBadGateway)
+			writeError(w, http.StatusBadGateway, "could not verify the bearer token with GitHub: "+err.Error())
 			return
 		}
-		r = r.Clone(identity.ContextWithGitHub(r.Context(), &identity.GitHub{Login: login, Token: token}))
-		r.Header.Set("Authorization", "Bearer "+idToken)
-		r.Header.Del(ForwardedIdentityHeader)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(identity.ContextWithGitHub(r.Context(), &identity.GitHub{Login: login, Token: token})))
 	})
 }
 
@@ -184,9 +204,16 @@ func (g *gitHubGuard) refuse(w http.ResponseWriter, code, description string) {
 		challenge += fmt.Sprintf(`, error=%q, error_description=%q`, code, headerQuotedString(description))
 	}
 	w.Header().Set("WWW-Authenticate", challenge)
-	http.Error(w, description, http.StatusUnauthorized)
+	writeError(w, http.StatusUnauthorized, description)
 }
 
 // errInvalidToken is the RFC 6750 error code for a bearer the resource
 // server does not accept.
 const errInvalidToken = "invalid_token"
+
+// writeError is a refusal as the REST API's JSON error body.
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}

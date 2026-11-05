@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"context"
 	"io"
 	"log/slog"
@@ -21,6 +22,10 @@ func fakeGitHub(t *testing.T, token, login string) (*httptest.Server, *int) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
+		if r.Header.Get("Authorization") == "Bearer ghu_ratelimited" {
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
 		if r.URL.Path != "/user" || r.Header.Get("Authorization") != "Bearer "+token {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
@@ -156,6 +161,12 @@ func TestRESTTakesThePinnedPairOrTheIDToken(t *testing.T) {
 	svcH.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code, "anything else is validated as an ID token")
 
+	req = httptest.NewRequest(http.MethodGet, "/v1/sources", nil)
+	req.Header.Set("Authorization", "Bearer migrate-secret")
+	rec = httptest.NewRecorder()
+	svcH.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code, "the service token resolves, nothing else")
+
 	mcp := o.protectMCP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	req = httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer migrate-secret")
@@ -168,4 +179,42 @@ func TestGitHubPinValidation(t *testing.T) {
 	assert.Error(t, GitHubPin{}.Validate())
 	assert.Error(t, GitHubPin{AuthorizationServer: "github.com/apps/x"}.Validate())
 	assert.NoError(t, GitHubPin{AuthorizationServer: "https://github.com/apps/giantswarm-agent-manager"}.Validate())
+}
+
+// The ID token is validated before GitHub is asked about the GitHub token,
+// GitHub's 403 (a rate limit) is a 502, not the caller's fault, and every
+// refusal is a JSON error body.
+func TestGitHubGuardOrderAndAnswers(t *testing.T) {
+	idp := newFakeIdP(t)
+	gh, calls := fakeGitHub(t, "ghu_person", "jane")
+	cfg := idp.config()
+	cfg.GitHub = &GitHubPin{AuthorizationServer: "https://github.com/apps/giantswarm-agent-manager", APIURL: gh.URL}
+	o, err := newOAuth(cfg, "/mcp", quiet())
+	require.NoError(t, err)
+	t.Cleanup(func() { o.shutdown(context.Background()) })
+	h := o.protectMCP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	call := func(bearer, idToken string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set(ForwardedIdentityHeader, idToken)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := call("ghu_person", "not-a-token")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Zero(t, *calls, "GitHub is not asked for a caller whose ID token fails")
+
+	forwarded := idp.idToken(t, []string{"agent-platform"}, time.Now().Add(30*time.Minute))
+	rec = call("ghu_ratelimited", forwarded)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.NotEmpty(t, body["error"])
+
+	rec = call("ghu_revoked", forwarded)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Contains(t, body["error"], "GitHub refused")
 }
