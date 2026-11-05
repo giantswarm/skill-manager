@@ -1,0 +1,5 @@
+replace-chart-version-with-git: true
+generate-metadata: true
+chart-dir: ./helm/skill-manager
+destination: ./build
+helm-template-extra-values: ./helm/skill-manager/ci/ci-values.yaml
