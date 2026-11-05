@@ -104,3 +104,17 @@ tests:
               secretKeyRef:
                 name: skill-manager-service
                 key: token
+
+  - it: refuses the service token without OAuth, which would guard nothing
+    set:
+      serviceToken:
+        secretName: skill-manager-service
+    asserts:
+      - failedTemplate:
+          errorMessage: "serviceToken.secretName needs oauth.enabled: without it the API admits everyone"
+
+  - it: passes the OCI registry allowlist
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oci-registries=gsoci.azurecr.io,gsociprivate.azurecr.io

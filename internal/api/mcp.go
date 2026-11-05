@@ -100,8 +100,8 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 	)
 
 	s.AddTool(mcp.NewTool(ToolListSkillSources,
-		tooldesc.Describe("List the configured skill sources, each with the commit its ref resolves to now.",
-			"Per source: url, ref (empty: the default branch), path scanned, readOnly, commit; error when it cannot be read or you cannot read it."),
+		tooldesc.Describe("List the configured skill sources, each with the commit its ref resolves to.",
+			"Per source: url, ref (empty: the default branch), path scanned, readOnly, commit (cached up to the cache TTL); error when it cannot be read or you cannot read it."),
 		readOnly(),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		list, err := svc.Sources(ctx)
@@ -113,9 +113,9 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 
 	s.AddTool(mcp.NewTool(ToolListSkills,
 		tooldesc.Describe("List the skills of the configured skill sources, with each source's commit.",
-			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error; per skill its SKILL.md name, description, repository-relative path and tags. Cached briefly; refresh re-reads GitHub."),
+			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads GitHub."),
 		readOnly(),
-		mcp.WithString("source", mcp.Description("Only this repository (https://github.com/<owner>/<repo>); default: every configured source")),
+		mcp.WithString("source", mcp.Description("Only this repository, any https://github.com/<owner>/<repo>; a configured one keeps its ref and path. Default: every source")),
 		mcp.WithBoolean("refresh", mcp.Description("Bypass the cache")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := svc.List(ctx, req.GetString("source", ""), req.GetBool("refresh", false))
@@ -127,7 +127,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 
 	s.AddTool(mcp.NewTool(ToolResolveSkills,
 		tooldesc.Describe("Pin skills and plugins: a git ref to its commit, an OCI tag to its digest.",
-			"Returns the same items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. A git item without ref takes the ref of the configured source holding its path. Refuses a repository you cannot read, a path missing at the commit, and a plugin asking claudeFormat that is not one."),
+			"Returns the items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. No ref: the ref of the source holding the path. The first refused item fails the call, named skills[i] or plugins[i]: a repository you cannot read, a missing path or commit, a non-Claude plugin asking claudeFormat."),
 		readOnly(),
 		mcp.WithArray("skills", mcp.Description("Skills: {name, path, git: {url, ref | commit}} or {name, oci: {ref}}"), mcp.Items(itemSchema)),
 		mcp.WithArray("plugins", mcp.Description("Plugins: {path, skills, git: {url, ref | commit}} or {skills, oci: {ref}}"), mcp.Items(itemSchema)),

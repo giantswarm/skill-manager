@@ -1,0 +1,31 @@
+# The NetworkPolicy is on by default: ingress from the release namespace and
+# the listed ones (muster's), egress to DNS and 443.
+#
+# Run with: make helm-test (helm unittest helm/skill-manager)
+suite: networkpolicy
+templates:
+  - templates/networkpolicy.yaml
+release:
+  name: skill-manager
+  namespace: agent-platform
+tests:
+  - it: is rendered by default
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            podSelector: {}
+
+  - it: admits the listed namespaces
+    set:
+      networkPolicy:
+        ingressNamespaces: [muster]
+    asserts:
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: muster

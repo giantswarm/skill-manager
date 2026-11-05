@@ -34,7 +34,6 @@ func TestParseImageReference(t *testing.T) {
 	}
 }
 
-
 // A tag of an allowed registry resolves to its digest; the bearer is
 // fetched once.
 func TestRegistryResolvesADigest(t *testing.T) {

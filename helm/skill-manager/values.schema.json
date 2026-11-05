@@ -17,7 +17,7 @@
         },
         "cacheTTL": {
             "type": "string",
-            "description": "How long a source's discovered skills are reused."
+            "description": "How long a source's discovered skills and head commit are reused. A failed read is retried after 30 seconds and keeps the last good listing."
         },
         "chartOperator": {
             "type": "object",
@@ -312,11 +312,11 @@
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Create a Kubernetes NetworkPolicy for the pod (off when an umbrella chart renders the policies)."
+                    "description": "Create a Kubernetes NetworkPolicy for the pod."
                 },
                 "ingressNamespaces": {
                     "type": "array",
-                    "description": "Namespaces allowed to reach the MCP endpoint (label kubernetes.io/metadata.name). Empty allows ingress from the release namespace only."
+                    "description": "Namespaces allowed to reach the MCP endpoint and the REST API (label kubernetes.io/metadata.name), besides the release namespace. List muster's, agent-manager's and the portal's namespaces when they run elsewhere, or they cannot reach the server."
                 },
                 "metricsNamespaces": {
                     "type": "array",
@@ -381,7 +381,7 @@
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Make skill-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint and the REST API require a bearer token Dex issued, validated against Dex's JWKS when its audience is in `trustedAudiences`. muster forwards the session's Dex id_token (`muster.mcpServer.auth`); agent-manager and the portal forward the person's. A REST call may instead carry the person's GitHub token as the bearer and the id_token in `X-Muster-Id-Token`, as agent-manager forwards them on its GitHub registration: the GitHub login then opens the private repositories the person can read. Off: no caller, and private repositories are refused; only for a server nothing but a trusted proxy can reach."
+                    "description": "Make skill-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint and the REST API require a bearer token Dex issued, validated against Dex's JWKS when its audience is in `trustedAudiences`. muster forwards the session's Dex id_token (`muster.mcpServer.auth`); agent-manager and the portal forward the person's. A REST call may instead carry the person's GitHub token as the bearer and the id_token in `X-Muster-Id-Token`, as agent-manager forwards them on its GitHub registration: the GitHub login then opens the private repositories the person can read. Off: no authentication at all, and private repositories are refused; only for a server nothing but a trusted proxy can reach. Off by default only because it needs the installation's Dex: the `agent-platform` meta chart turns it on."
                 },
                 "existingSecret": {
                     "type": "string",
@@ -457,6 +457,19 @@
                 }
             }
         },
+        "oci": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "registries": {
+                    "type": "array",
+                    "description": "The registries (host or host:port) an OCI skill or plugin may come from. No other registry, and none by IP address, is asked; a token realm must be on the registry or another listed host.",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "podAnnotations": {
             "type": "object",
             "description": "Annotations on the pod.",
@@ -500,7 +513,7 @@
         },
         "replicaCount": {
             "type": "integer",
-            "description": "Number of replicas. The server keeps no MCP session state, so two or more are fine; each keeps its own discovery cache."
+            "description": "Number of replicas. The server keeps no MCP session state and every replica validates forwarded Dex tokens, so two or more are fine for muster, agent-manager and the portal; each keeps its own discovery cache. Tokens the server issues itself (a client signing in to it directly) live in one replica's memory and fail on another."
         },
         "resources": {
             "type": "object",

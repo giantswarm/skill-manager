@@ -12,7 +12,7 @@ Owns the Agent Platform's skill sources, lists their skills and pins skills and 
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| replicaCount | int | `1` | Number of replicas. The server keeps no MCP session state, so two or more are fine; each keeps its own discovery cache. |
+| replicaCount | int | `1` | Number of replicas. The server keeps no MCP session state and every replica validates forwarded Dex tokens, so two or more are fine for muster, agent-manager and the portal; each keeps its own discovery cache. Tokens the server issues itself (a client signing in to it directly) live in one replica's memory and fail on another. |
 | revisionHistoryLimit | int | `3` | Number of old ReplicaSets retained for rollback. |
 | image.registry | string | `"gsoci.azurecr.io"` | Image registry. |
 | image.repository | string | `"giantswarm/skill-manager"` | Image repository. |
@@ -27,11 +27,12 @@ Owns the Agent Platform's skill sources, lists their skills and pins skills and 
 | github.app.secretName | string | `""` | Existing Secret in the release namespace of the read-only skills GitHub App, with the keys `app-id`, `installation-id` and `private-key` (PEM): skills are discovered and pinned with the App's installation tokens, at the App's rate limit. Mutually exclusive with `tokenSecret`. |
 | github.tokenSecret.name | string | `""` | Existing Secret in the release namespace with a static GitHub token. Prefer `app`. Empty (and no `app`): anonymous, public repositories only. |
 | github.tokenSecret.key | string | `"token"` | Key of the token in that Secret. |
-| cacheTTL | string | `"5m"` | How long a source's discovered skills are reused. |
+| cacheTTL | string | `"5m"` | How long a source's discovered skills and head commit are reused. A failed read is retried after 30 seconds and keeps the last good listing. |
+| oci.registries | list | `["gsoci.azurecr.io","gsociprivate.azurecr.io"]` | The registries (host or host:port) an OCI skill or plugin may come from. No other registry, and none by IP address, is asked; a token realm must be on the registry or another listed host. |
 | serviceToken.secretName | string | `""` | Existing Secret in the release namespace with a bearer the REST API admits as the platform's own caller, no person, for agent-manager's `migrate`; no readability check applies to it. Needs `oauth.enabled`. Empty: none. |
 | serviceToken.key | string | `"token"` | Key of the token in that Secret. |
 | mcp.path | string | `"/mcp"` | MCP endpoint path. |
-| oauth.enabled | bool | `false` | Make skill-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint and the REST API require a bearer token Dex issued, validated against Dex's JWKS when its audience is in `trustedAudiences`. muster forwards the session's Dex id_token (`muster.mcpServer.auth`); agent-manager and the portal forward the person's. A REST call may instead carry the person's GitHub token as the bearer and the id_token in `X-Muster-Id-Token`, as agent-manager forwards them on its GitHub registration: the GitHub login then opens the private repositories the person can read. Off: no caller, and private repositories are refused; only for a server nothing but a trusted proxy can reach. |
+| oauth.enabled | bool | `false` | Make skill-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint and the REST API require a bearer token Dex issued, validated against Dex's JWKS when its audience is in `trustedAudiences`. muster forwards the session's Dex id_token (`muster.mcpServer.auth`); agent-manager and the portal forward the person's. A REST call may instead carry the person's GitHub token as the bearer and the id_token in `X-Muster-Id-Token`, as agent-manager forwards them on its GitHub registration: the GitHub login then opens the private repositories the person can read. Off: no authentication at all, and private repositories are refused; only for a server nothing but a trusted proxy can reach. Off by default only because it needs the installation's Dex: the `agent-platform` meta chart turns it on. |
 | oauth.baseURL | string | `""` | Public base URL of this server: the issuer of its own OAuth metadata (https, or http on loopback). Empty derives `https://<fullname>.<global.domain>` when `global.domain` is set. |
 | oauth.dex.issuerURL | string | `""` | Dex issuer URL. Empty falls back to `global.identity.issuerUrl`. |
 | oauth.dex.clientID | string | `""` | Dex OAuth client ID. Empty falls back to `global.identity.clientId`. |
@@ -59,8 +60,8 @@ Owns the Agent Platform's skill sources, lists their skills and pins skills and 
 | muster.mcpServer.auth.github.authorizationServer.clientCredentialsSecretRef.name | string | `"giantswarm-agent-manager-oauth-client"` | Secret with the App's OAuth client under `client-id` and `client-secret`, which muster reads. |
 | muster.mcpServer.auth.github.authorizationServer.clientCredentialsSecretRef.namespace | string | `""` | Namespace of that Secret; empty is the release namespace. |
 | muster.mcpServer.auth.github.authorizationServer.grantScope | string | `"subject"` | `subject`: the grant belongs to the person. |
-| networkPolicy.enabled | bool | `false` | Create a Kubernetes NetworkPolicy for the pod (off when an umbrella chart renders the policies). |
-| networkPolicy.ingressNamespaces | list | `[]` | Namespaces allowed to reach the MCP endpoint (label kubernetes.io/metadata.name). Empty allows ingress from the release namespace only. |
+| networkPolicy.enabled | bool | `true` | Create a Kubernetes NetworkPolicy for the pod. |
+| networkPolicy.ingressNamespaces | list | `[]` | Namespaces allowed to reach the MCP endpoint and the REST API (label kubernetes.io/metadata.name), besides the release namespace. List muster's, agent-manager's and the portal's namespaces when they run elsewhere, or they cannot reach the server. |
 | networkPolicy.allowInternet | bool | `true` | Allow egress on 443 to every destination: GitHub, OCI registries and Dex. Vanilla NetworkPolicy cannot select by name; narrow with egressCIDRs instead when the addresses are known. |
 | networkPolicy.egressCIDRs | list | `[]` | Extra egress CIDRs. |
 | networkPolicy.metricsNamespaces | list | `["kube-system"]` | Namespaces allowed to scrape the metrics port (label kubernetes.io/metadata.name), when `observability.metrics.enabled`. |

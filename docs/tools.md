@@ -11,9 +11,9 @@ Generated from the registered tools (`make tools-doc`); through muster every too
 ## `list_skill_sources`
 
 ```text
-List the configured skill sources, each with the commit its ref resolves to now.
+List the configured skill sources, each with the commit its ref resolves to.
 
-Per source: url, ref (empty: the default branch), path scanned, readOnly, commit; error when it cannot be read or you cannot read it.
+Per source: url, ref (empty: the default branch), path scanned, readOnly, commit (cached up to the cache TTL); error when it cannot be read or you cannot read it.
 ```
 
 ```json
@@ -29,7 +29,7 @@ Per source: url, ref (empty: the default branch), path scanned, readOnly, commit
 ```text
 List the skills of the configured skill sources, with each source's commit.
 
-Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error; per skill its SKILL.md name, description, repository-relative path and tags. Cached briefly; refresh re-reads GitHub.
+Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads GitHub.
 ```
 
 ```json
@@ -40,7 +40,7 @@ Per repository: the ref read, the commit it resolved to, the path scanned, readO
       "type": "boolean"
     },
     "source": {
-      "description": "Only this repository (https://github.com/<owner>/<repo>); default: every configured source",
+      "description": "Only this repository, any https://github.com/<owner>/<repo>; a configured one keeps its ref and path. Default: every source",
       "type": "string"
     }
   },
@@ -54,7 +54,7 @@ Per repository: the ref read, the commit it resolved to, the path scanned, readO
 ```text
 Pin skills and plugins: a git ref to its commit, an OCI tag to its digest.
 
-Returns the same items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. A git item without ref takes the ref of the configured source holding its path. Refuses a repository you cannot read, a path missing at the commit, and a plugin asking claudeFormat that is not one.
+Returns the items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. No ref: the ref of the source holding the path. The first refused item fails the call, named skills[i] or plugins[i]: a repository you cannot read, a missing path or commit, a non-Claude plugin asking claudeFormat.
 ```
 
 ```json

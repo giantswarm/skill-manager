@@ -1,8 +1,8 @@
 package server
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"

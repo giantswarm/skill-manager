@@ -1,3 +1,6 @@
+{{- if and .Values.serviceToken.secretName (not .Values.oauth.enabled) }}
+{{- fail "serviceToken.secretName needs oauth.enabled: without it the API admits everyone" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,6 +50,7 @@ spec:
             {{- end }}
             - --cache-ttl={{ .Values.cacheTTL }}
             - --github-api-url={{ .Values.github.apiUrl }}
+            - --oci-registries={{ join "," .Values.oci.registries }}
             {{- if .Values.github.app.secretName }}
             {{- if .Values.github.tokenSecret.name }}
             {{- fail "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential" }}
@@ -75,6 +79,7 @@ spec:
             {{- end }}
             {{- if .Values.muster.mcpServer.auth.github.enabled }}
             - --github-authorization-server={{ .Values.muster.mcpServer.auth.github.authorizationServer.issuer }}
+            - --muster-server={{ .Values.muster.mcpServer.name }}
             {{- end }}
             {{- end }}
             {{- if .Values.logging.verbose }}
