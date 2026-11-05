@@ -116,3 +116,10 @@ func (l Lister) List(_ context.Context, repository, _ string, refresh bool) (*sk
 	}
 	return out, nil
 }
+
+// Calls are every lookup made, in order.
+func (p *Pinner) Calls() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.calls...)
+}

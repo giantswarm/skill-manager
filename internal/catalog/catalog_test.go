@@ -172,3 +172,31 @@ func TestSourcesReportTheirCommit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, catalogtest.MainHead, got[1].Commit)
 }
+
+// A plugin item that asks for claudeFormat must be a Claude Code plugin.
+func TestResolveRequiresAClaudeFormatPluginWhenAsked(t *testing.T) {
+	svc, _ := newService()
+	yes := true
+	got, err := svc.Resolve(t.Context(), Request{Plugins: []Item{{Path: "plugins/claude", Git: &Git{URL: catalogtest.SkillsRepo}, ClaudeFormat: &yes}}})
+	require.NoError(t, err)
+	assert.True(t, *got.Plugins[0].ClaudeFormat)
+
+	_, err = svc.Resolve(t.Context(), Request{Plugins: []Item{{Path: "plugins/agent", Git: &Git{URL: catalogtest.SkillsRepo}, ClaudeFormat: &yes}}})
+	require.ErrorIs(t, err, ErrInvalid)
+	assert.ErrorContains(t, err, "not a Claude Code plugin")
+
+	_, err = svc.Resolve(t.Context(), Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo}, ClaudeFormat: &yes}}})
+	require.ErrorIs(t, err, ErrInvalid, "claudeFormat is for plugins")
+}
+
+// The platform's own service caller (agent-manager's migrate) rewrites
+// existing pins: it is not a person, so no readability check applies.
+func TestResolveForTheServiceCallerSkipsTheReadabilityCheck(t *testing.T) {
+	svc, p := newService()
+	got, err := svc.Resolve(identity.ContextWithService(t.Context()), Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}})
+	require.NoError(t, err)
+	assert.Equal(t, catalogtest.MainHead, got.Skills[0].Git.Commit)
+	for _, c := range p.Calls() {
+		assert.NotContains(t, c, "readable")
+	}
+}

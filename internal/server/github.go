@@ -90,7 +90,7 @@ func newGitHubGuard(pin GitHubPin, log *slog.Logger) (*gitHubGuard, error) {
 	if pin.CacheTTL <= 0 {
 		pin.CacheTTL = DefaultGitHubCacheTTL
 	}
-	log.Info("GitHub App pin enabled", "authorizationServer", pin.AuthorizationServer, "api", pin.apiURL(), "cacheTTL", pin.CacheTTL)
+	log.Info("GitHub bearer verification enabled", "authorizationServer", pin.AuthorizationServer, "api", pin.apiURL(), "cacheTTL", pin.CacheTTL)
 	return &gitHubGuard{pin: pin, http: &http.Client{Timeout: 10 * time.Second}, log: log, cache: map[[sha256.Size]byte]gitHubEntry{}}, nil
 }
 

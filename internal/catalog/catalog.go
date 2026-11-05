@@ -82,8 +82,9 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 
 // List discovers the skills of every configured source, or of source alone
 // (any github.com repository URL; a configured one keeps its ref and path). A
-// private repository is listed only to a caller who can read it; anyone else
-// gets its URL and why its skills are withheld.
+// private repository is listed only to a caller who can read it (and to the
+// platform's service caller); anyone else gets its URL and why its skills
+// are withheld.
 func (s *Service) List(ctx context.Context, source string, refresh bool) (*skills.Result, error) {
 	res, err := s.skills.List(ctx, source, "", refresh)
 	if err != nil {
@@ -91,7 +92,7 @@ func (s *Service) List(ctx context.Context, source string, refresh bool) (*skill
 	}
 	out := &skills.Result{Repositories: make([]skills.Repository, 0, len(res.Repositories))}
 	for _, repo := range res.Repositories {
-		if repo.Private {
+		if repo.Private && !identity.IsService(ctx) {
 			if err := s.pinner.RequireReadable(ctx, repo.RepoURL, gitHubLogin(ctx)); err != nil {
 				repo = skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: true, Skills: []skills.Skill{}, Error: err.Error(), FetchedAt: repo.FetchedAt}
 			}
@@ -120,7 +121,9 @@ type Item struct {
 	// Skills is a plugin's skill selection, passed through.
 	Skills []string `json:"skills,omitempty"`
 	// ClaudeFormat is set on a pinned git plugin: whether it is a Claude Code
-	// plugin (a .claude-plugin/plugin.json and no root plugin.json).
+	// plugin (a .claude-plugin/plugin.json and no root plugin.json). true on
+	// a requested plugin requires it: a git plugin that is not one is
+	// refused (ErrInvalid), an OCI plugin cannot be checked and is refused.
 	ClaudeFormat *bool `json:"claudeFormat,omitempty"`
 }
 
@@ -153,8 +156,10 @@ func (e *ItemError) Unwrap() error { return e.Err }
 // Resolve pins every item for the caller: a git item to the commit of its
 // ref (none given: the ref of the configured source holding its path, else
 // the default branch; a commit given stays), an OCI item to its digest. The
-// caller must be able to read every git repository, and every path must
-// exist at its commit. The first refused item fails the whole request.
+// person must be able to read every git repository (RequireReadable: a
+// private one needs their GitHub login's read permission; the platform's
+// service caller is exempt), and every path must exist at its commit. The
+// first refused item fails the whole request.
 func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
 	for _, l := range []struct {
 		name  string
@@ -166,7 +171,7 @@ func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
 			}
 		}
 	}
-	r := &resolution{svc: s, login: gitHubLogin(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
+	r := &resolution{svc: s, login: gitHubLogin(ctx), service: identity.IsService(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
 	out := &Request{}
 	var err error
 	if out.Skills, err = r.pin(ctx, "skills", req.Skills); err != nil {
@@ -204,6 +209,12 @@ func validate(it Item, skill bool) error {
 		if skill && it.Path != "" {
 			return errors.New("path is for git skills; an OCI skill is the whole image")
 		}
+		if it.ClaudeFormat != nil && *it.ClaudeFormat {
+			return errors.New("claudeFormat is checked for git plugins only")
+		}
+	}
+	if skill && it.ClaudeFormat != nil {
+		return errors.New("claudeFormat is for plugins")
 	}
 	if strings.HasPrefix(it.Path, "/") {
 		return fmt.Errorf("path %q must be relative to the repository root", it.Path)
@@ -219,8 +230,9 @@ func validate(it Item, skill bool) error {
 // resolution is one Resolve: each repository ref, readability and path is
 // looked up once, however many items share it.
 type resolution struct {
-	svc   *Service
-	login string
+	svc     *Service
+	login   string
+	service bool
 
 	mu       sync.Mutex
 	heads    map[string]string
@@ -281,12 +293,18 @@ func (r *resolution) item(ctx context.Context, it Item, plugin bool) (Item, erro
 		if err != nil {
 			return Item{}, classify(err)
 		}
+		if !claude && it.ClaudeFormat != nil && *it.ClaudeFormat {
+			return Item{}, fmt.Errorf("%w: %s at %s path %q is not a Claude Code plugin (a .claude-plugin/plugin.json and no root plugin.json)", ErrInvalid, url, commit, it.Path)
+		}
 		out.ClaudeFormat = &claude
 	}
 	return out, nil
 }
 
 func (r *resolution) requireReadable(ctx context.Context, url string) error {
+	if r.service {
+		return nil
+	}
 	r.mu.Lock()
 	err, seen := r.readable[url]
 	r.mu.Unlock()

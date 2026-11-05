@@ -99,7 +99,9 @@ func TestRESTTakesThePinnedPairOrTheIDToken(t *testing.T) {
 	idp := newFakeIdP(t)
 	gh, _ := fakeGitHub(t, "ghu_person", "jane")
 	cfg := idp.config()
-	cfg.GitHub = &GitHubPin{AuthorizationServer: "https://github.com/apps/giantswarm-agent-manager", APIURL: gh.URL}
+	// No MCP pin: the REST API takes the pair agent-manager forwards anyway.
+	cfg.GitHubAPIURL = gh.URL
+	cfg.ServiceToken = "migrate-secret"
 	o, err := newOAuth(cfg, "/mcp", quiet())
 	require.NoError(t, err)
 	t.Cleanup(func() { o.shutdown(context.Background()) })
@@ -135,6 +137,31 @@ func TestRESTTakesThePinnedPairOrTheIDToken(t *testing.T) {
 	assert.Empty(t, login, "the ID token alone carries no GitHub login")
 
 	assert.Equal(t, http.StatusUnauthorized, call("ghu_revoked", forwarded), "a GitHub token GitHub refuses")
+
+	// agent-manager's migrate has no caller: it sends the service token.
+	var service bool
+	svcH := o.protectREST(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		service = identity.IsService(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", nil)
+	req.Header.Set("Authorization", "Bearer migrate-secret")
+	rec := httptest.NewRecorder()
+	svcH.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	assert.True(t, service, "the service token is the platform's own caller")
+	req = httptest.NewRequest(http.MethodPost, "/v1/resolve", nil)
+	req.Header.Set("Authorization", "Bearer migrate-secreT")
+	rec = httptest.NewRecorder()
+	svcH.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code, "anything else is validated as an ID token")
+
+	mcp := o.protectMCP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	req = httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer migrate-secret")
+	rec = httptest.NewRecorder()
+	mcp.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code, "the service token is for the REST API only")
 }
 
 func TestGitHubPinValidation(t *testing.T) {

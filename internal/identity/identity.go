@@ -20,6 +20,9 @@ const (
 	// SourceOAuth is an access token issued by this server's own OAuth 2.1
 	// flow (a client that authenticated directly, e.g. mcp-debug).
 	SourceOAuth Source = "oauth"
+	// SourceService is the platform's own service token (agent-manager's
+	// migrate), not a person.
+	SourceService Source = "service"
 )
 
 // Identity is the authenticated caller.
@@ -95,4 +98,19 @@ func ContextWithGitHub(ctx context.Context, gh *GitHub) context.Context {
 func GitHubFromContext(ctx context.Context) (*GitHub, bool) {
 	gh, ok := ctx.Value(gitHubKey).(*GitHub)
 	return gh, ok && gh != nil
+}
+
+type serviceKey struct{}
+
+// ContextWithService marks the caller as the platform's own service (the
+// service token agent-manager's migrate sends): no person, so no GitHub
+// login and no person's readability check.
+func ContextWithService(ctx context.Context) context.Context {
+	return context.WithValue(ctx, serviceKey{}, true)
+}
+
+// IsService reports whether the caller is the platform's own service.
+func IsService(ctx context.Context) bool {
+	v, _ := ctx.Value(serviceKey{}).(bool)
+	return v
 }

@@ -87,3 +87,15 @@ func TestServePinNeedsOAuth(t *testing.T) {
 	_, err := parse(t, "--github-authorization-server=https://github.com/apps/x").serverConfig()
 	assert.ErrorContains(t, err, "--enable-oauth")
 }
+
+// The service token and the GitHub API reach the REST guard.
+func TestServeServiceToken(t *testing.T) {
+	t.Setenv("SKILL_MANAGER_SERVICE_TOKEN", "s3cret")
+	cfg, err := parse(t, "--enable-oauth", "--github-api-url=https://ghe.example.com/api/v3").serverConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "s3cret", cfg.OAuth.ServiceToken)
+	assert.Equal(t, "https://ghe.example.com/api/v3", cfg.OAuth.GitHubAPIURL)
+
+	_, err = parse(t).serverConfig()
+	assert.ErrorContains(t, err, "--enable-oauth", "a service token without OAuth guards nothing")
+}

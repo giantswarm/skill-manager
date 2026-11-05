@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -73,6 +74,14 @@ type OAuthConfig struct {
 	// AllowPublicClientRegistration lets MCP clients register over DCR
 	// without a token (labs only).
 	AllowPublicClientRegistration bool
+	// GitHubAPIURL is where GET /user verifies a GitHub bearer the REST API
+	// receives beside ForwardedIdentityHeader (empty: api.github.com, or
+	// GitHub.APIURL).
+	GitHubAPIURL string
+	// ServiceToken, when set, is a bearer the REST API admits as the
+	// platform's own service caller (identity.ContextWithService): agent-
+	// manager's migrate, which has no caller. Compared in constant time.
+	ServiceToken string
 	// GitHub, when set, pins the MCP registration to the App: the bearer on
 	// the MCP endpoint is the person's App user token and the IdP ID token
 	// arrives in ForwardedIdentityHeader (GitHubPin). The REST API takes the
@@ -126,6 +135,9 @@ type oauthRuntime struct {
 	mcpPath string
 	log     *slog.Logger
 	github  *gitHubGuard
+	// restGitHub verifies the GitHub bearer of a REST request that carries
+	// ForwardedIdentityHeader, pinned or not.
+	restGitHub *gitHubGuard
 }
 
 func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime, error) {
@@ -160,6 +172,12 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	o := &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}
 	if cfg.GitHub != nil {
 		if o.github, err = newGitHubGuard(*cfg.GitHub, log); err != nil {
+			return nil, err
+		}
+		o.restGitHub = o.github
+	} else {
+		pin := GitHubPin{AuthorizationServer: "https://github.com", APIURL: cfg.GitHubAPIURL}
+		if o.restGitHub, err = newGitHubGuard(pin, log); err != nil {
 			return nil, err
 		}
 	}
@@ -245,22 +263,24 @@ func (o *oauthRuntime) protectMCP(next http.Handler) http.Handler {
 	return h
 }
 
-// protectREST is protect for the REST API: a request that carries
-// ForwardedIdentityHeader is the pinned pair, the person's GitHub user token
-// as the bearer and their ID token beside it, and goes through the App pin
-// first; any other carries the ID token as its bearer.
+// protectREST is protect for the REST API: the service token is the
+// platform's own caller; a request that carries ForwardedIdentityHeader is
+// the pair agent-manager forwards on its GitHub registration, the person's
+// GitHub user token as the bearer and their ID token beside it, and goes
+// through GET /user first; any other carries the ID token as its bearer.
 func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 	plain := o.protect(next)
-	if o.github == nil {
-		return plain
-	}
-	pinned := o.github.protect(plain)
+	pinned := o.restGitHub.protect(plain)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(ForwardedIdentityHeader) != "" {
+		switch {
+		case o.cfg.ServiceToken != "" && subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(o.cfg.ServiceToken)) == 1:
+			ctx := identity.ContextWith(identity.ContextWithService(r.Context()), &identity.Identity{Subject: "service", Source: identity.SourceService})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		case r.Header.Get(ForwardedIdentityHeader) != "":
 			pinned.ServeHTTP(w, r)
-			return
+		default:
+			plain.ServeHTTP(w, r)
 		}
-		plain.ServeHTTP(w, r)
 	})
 }
 

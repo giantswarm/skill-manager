@@ -54,7 +54,7 @@ Per repository: the ref read, the commit it resolved to, the path scanned, readO
 ```text
 Pin skills and plugins: a git ref to its commit, an OCI tag to its digest.
 
-Returns the same items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. A git item without ref takes the ref of the configured source holding its path. Refuses a repository you cannot read and a path missing at the commit.
+Returns the same items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. A git item without ref takes the ref of the configured source holding its path. Refuses a repository you cannot read, a path missing at the commit, and a plugin asking claudeFormat that is not one.
 ```
 
 ```json
@@ -64,6 +64,10 @@ Returns the same items with git.commit set and git.ref dropped, or oci.ref by di
       "description": "Plugins: {path, skills, git: {url, ref | commit}} or {skills, oci: {ref}}",
       "items": {
         "properties": {
+          "claudeFormat": {
+            "description": "Plugins: true refuses one that is not a Claude Code plugin",
+            "type": "boolean"
+          },
           "git": {
             "properties": {
               "commit": {
@@ -119,6 +123,10 @@ Returns the same items with git.commit set and git.ref dropped, or oci.ref by di
       "description": "Skills: {name, path, git: {url, ref | commit}} or {name, oci: {ref}}",
       "items": {
         "properties": {
+          "claudeFormat": {
+            "description": "Plugins: true refuses one that is not a Claude Code plugin",
+            "type": "boolean"
+          },
           "git": {
             "properties": {
               "commit": {

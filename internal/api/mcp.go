@@ -73,7 +73,8 @@ var itemSchema = map[string]any{
 			"required":   []string{"ref"},
 			"properties": map[string]any{"ref": map[string]any{"type": "string", "description": "<registry>/<repository>[:<tag>|@sha256:<digest>]"}},
 		},
-		"skills": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "A plugin's skill selection, passed through"},
+		"skills":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "A plugin's skill selection, passed through"},
+		"claudeFormat": map[string]any{"type": "boolean", "description": "Plugins: true refuses one that is not a Claude Code plugin"},
 	},
 }
 
@@ -117,7 +118,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 
 	s.AddTool(mcp.NewTool(ToolResolveSkills,
 		tooldesc.Describe("Pin skills and plugins: a git ref to its commit, an OCI tag to its digest.",
-			"Returns the same items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. A git item without ref takes the ref of the configured source holding its path. Refuses a repository you cannot read and a path missing at the commit."),
+			"Returns the same items with git.commit set and git.ref dropped, or oci.ref by digest; a git plugin also gets claudeFormat. A git item without ref takes the ref of the configured source holding its path. Refuses a repository you cannot read, a path missing at the commit, and a plugin asking claudeFormat that is not one."),
 		readOnly(),
 		mcp.WithArray("skills", mcp.Description("Skills: {name, path, git: {url, ref | commit}} or {name, oci: {ref}}"), mcp.Items(itemSchema)),
 		mcp.WithArray("plugins", mcp.Description("Plugins: {path, skills, git: {url, ref | commit}} or {skills, oci: {ref}}"), mcp.Items(itemSchema)),
