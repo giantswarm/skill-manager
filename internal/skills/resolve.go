@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/giantswarm/skill-manager/internal/lru"
 	"github.com/giantswarm/skill-manager/internal/oci"
 )
 
@@ -42,9 +42,23 @@ var (
 type Resolver struct {
 	gh       *github
 	registry *oci.Registry
+	signIn   string
 
-	mu     sync.Mutex
-	access map[string]accessEntry
+	access *lru.Cache[string, accessEntry]
+	meta   *lru.Cache[string, metaEntry]
+}
+
+// resolverCacheMax bounds the per-person access answers and the repository
+// metadata.
+const resolverCacheMax = 4096
+
+// metaTTL is how long a repository's metadata (default branch, visibility)
+// is reused: within one resolve and the calls right after it.
+const metaTTL = time.Minute
+
+type metaEntry struct {
+	meta  repoMeta
+	until time.Time
 }
 
 // ErrNotReadable marks a private skill repository the person asking cannot
@@ -58,7 +72,30 @@ func NewResolver(apiURL string, tokens TokenSource, client *http.Client, registr
 	if registry == nil {
 		registry = oci.NewRegistry(nil, nil)
 	}
-	return &Resolver{gh: newGitHub(apiURL, tokens, client), registry: registry, access: map[string]accessEntry{}}
+	return &Resolver{gh: newGitHub(apiURL, tokens, client), registry: registry,
+		access: lru.New[string, accessEntry](resolverCacheMax), meta: lru.New[string, metaEntry](resolverCacheMax)}
+}
+
+// WithSignIn names the MCP server a person connects to GitHub through
+// (core_auth_login server=<server>) in the refusal of a private repository
+// to a caller without a GitHub login: only where the GitHub pin is on.
+func (r *Resolver) WithSignIn(server string) *Resolver {
+	r.signIn = server
+	return r
+}
+
+// repository is the repository's metadata, reused for metaTTL.
+func (r *Resolver) repository(ctx context.Context, owner, repo string) (repoMeta, error) {
+	key := strings.ToLower(owner + "/" + repo)
+	if e, ok := r.meta.Get(key); ok && time.Now().Before(e.until) {
+		return e.meta, nil
+	}
+	m, err := r.gh.repository(ctx, owner, repo)
+	if err != nil {
+		return repoMeta{}, err
+	}
+	r.meta.Add(key, metaEntry{meta: m, until: time.Now().Add(metaTTL)})
+	return m, nil
 }
 
 // accessTTL is how long a person's answer for a repository is reused.
@@ -80,9 +117,7 @@ func (r *Resolver) RequireReadable(ctx context.Context, repoURL, login string) e
 		return fmt.Errorf("%w: %v", ErrUnresolvable, err)
 	}
 	key := strings.ToLower(login + " " + owner + "/" + repo)
-	r.mu.Lock()
-	e, ok := r.access[key]
-	r.mu.Unlock()
+	e, ok := r.access.Get(key)
 	if ok && time.Now().Before(e.until) {
 		return e.err
 	}
@@ -90,14 +125,12 @@ func (r *Resolver) RequireReadable(ctx context.Context, repoURL, login string) e
 	if err != nil && !errors.Is(err, ErrNotReadable) {
 		return err // a failed lookup is not cached
 	}
-	r.mu.Lock()
-	r.access[key] = accessEntry{err: err, until: time.Now().Add(accessTTL)}
-	r.mu.Unlock()
+	r.access.Add(key, accessEntry{err: err, until: time.Now().Add(accessTTL)})
 	return err
 }
 
 func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login string) error {
-	meta, err := r.gh.repository(ctx, owner, repo)
+	meta, err := r.repository(ctx, owner, repo)
 	if err != nil {
 		return r.unresolvable(ctx, repoURL, "the visibility", err)
 	}
@@ -105,7 +138,10 @@ func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login str
 		return nil
 	}
 	if login == "" {
-		return fmt.Errorf("%w: %s is private and your GitHub identity is unknown, so skill-manager cannot check that you may read it; use it through muster with skill-manager connected to GitHub (core_auth_login server=skill-manager)", ErrNotReadable, repoURL)
+		if r.signIn != "" {
+			return fmt.Errorf("%w: %s is private and your GitHub identity is unknown, so skill-manager cannot check that you may read it; connect GitHub in muster (core_auth_login server=%s)", ErrNotReadable, repoURL, r.signIn)
+		}
+		return fmt.Errorf("%w: you cannot read %s: it is private and skill-manager knows no GitHub login of yours", ErrNotReadable, repoURL)
 	}
 	perm, err := r.gh.permission(ctx, owner, repo, login)
 	if err != nil {
@@ -131,9 +167,11 @@ func (r *Resolver) GitHead(ctx context.Context, repoURL, ref string) (string, er
 		return "", fmt.Errorf("%w: %v", ErrUnresolvable, err)
 	}
 	if ref == "" {
-		if ref, err = r.gh.defaultBranch(ctx, owner, repo); err != nil {
+		meta, err := r.repository(ctx, owner, repo)
+		if err != nil {
 			return "", r.unresolvable(ctx, repoURL, "its default branch", err)
 		}
+		ref = meta.DefaultBranch
 	}
 	sha, err := r.gh.headCommit(ctx, owner, repo, ref)
 	if err != nil {
@@ -167,7 +205,8 @@ func (r *Resolver) ClaudeFormatPlugin(ctx context.Context, repoURL, commit, path
 }
 
 // PathExists reports whether repoURL has a file or a directory at path at
-// commit; "" is the repository root, which always exists.
+// commit, without transferring it; "" is the repository root, which always
+// exists.
 func (r *Resolver) PathExists(ctx context.Context, repoURL, commit, path string) (bool, error) {
 	owner, repo, err := parseRepoURL(repoURL)
 	if err != nil {
@@ -177,16 +216,23 @@ func (r *Resolver) PathExists(ctx context.Context, repoURL, commit, path string)
 	if path == "" {
 		return true, nil
 	}
-	// For a directory GitHub answers its listing whatever the Accept.
-	_, err = r.gh.raw(ctx, owner, repo, path, commit)
-	var api *apiError
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.As(err, &api) && api.status == http.StatusNotFound:
-		return false, nil
+	ok, err := r.gh.exists(ctx, owner, repo, path, commit)
+	if err != nil {
+		return false, r.unresolvable(ctx, repoURL, "path "+path+" at "+commit, err)
 	}
-	return false, r.unresolvable(ctx, repoURL, "path "+path+" at "+commit, err)
+	return ok, nil
+}
+
+// CommitExists refuses a commit repoURL does not have (ErrNotFound).
+func (r *Resolver) CommitExists(ctx context.Context, repoURL, commit string) error {
+	owner, repo, err := parseRepoURL(repoURL)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnresolvable, err)
+	}
+	if _, err := r.gh.headCommit(ctx, owner, repo, commit); err != nil {
+		return r.unresolvable(ctx, repoURL, "commit "+commit, err)
+	}
+	return nil
 }
 
 func joinPluginPath(dir, file string) string {

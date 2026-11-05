@@ -69,12 +69,6 @@ func (g *github) repository(ctx context.Context, owner, repo string) (repoMeta, 
 	return meta, nil
 }
 
-// defaultBranch reads the repository's default branch.
-func (g *github) defaultBranch(ctx context.Context, owner, repo string) (string, error) {
-	meta, err := g.repository(ctx, owner, repo)
-	return meta.DefaultBranch, err
-}
-
 // permission is login's permission on the repository (admin, write, read or
 // none); a login GitHub does not know as a collaborator is none.
 func (g *github) permission(ctx context.Context, owner, repo, login string) (string, error) {
@@ -93,18 +87,39 @@ func (g *github) permission(ctx context.Context, owner, repo, login string) (str
 }
 
 // headCommit resolves a ref (branch, tag or commit) to the commit it points
-// at right now.
+// at right now: the sha media type answers the id alone, not the commit.
 func (g *github) headCommit(ctx context.Context, owner, repo, ref string) (string, error) {
-	var head struct {
-		SHA string `json:"sha"`
-	}
-	if err := g.getJSON(ctx, fmt.Sprintf("%s/repos/%s/%s/commits/%s", g.apiURL, owner, repo, url.PathEscape(ref)), &head); err != nil {
+	body, err := g.get(ctx, fmt.Sprintf("%s/repos/%s/%s/commits/%s", g.apiURL, owner, repo, url.PathEscape(ref)), "application/vnd.github.sha")
+	if err != nil {
 		return "", err
 	}
-	if head.SHA == "" {
+	sha := strings.TrimSpace(string(body))
+	if !CommitPattern.MatchString(sha) {
 		return "", fmt.Errorf("GitHub reported no commit for %s/%s@%s", owner, repo, ref)
 	}
-	return head.SHA, nil
+	return sha, nil
+}
+
+// exists asks whether path is a file or a directory at ref with a HEAD of
+// the contents endpoint: no file body is transferred.
+func (g *github) exists(ctx context.Context, owner, repo, path, ref string) (bool, error) {
+	_, err := g.do(ctx, http.MethodHead, g.contentsURL(owner, repo, path, ref), "application/vnd.github.raw+json")
+	var api *apiError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &api) && api.status == http.StatusNotFound:
+		return false, nil
+	}
+	return false, err
+}
+
+func (g *github) contentsURL(owner, repo, path, ref string) string {
+	segments := strings.Split(path, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s", g.apiURL, owner, repo, strings.Join(segments, "/"), url.QueryEscape(ref))
 }
 
 func (g *github) getJSON(ctx context.Context, target string, out any) error {
@@ -119,12 +134,7 @@ func (g *github) getJSON(ctx context.Context, target string, out any) error {
 }
 
 func (g *github) raw(ctx context.Context, owner, repo, path, ref string) (string, error) {
-	segments := strings.Split(path, "/")
-	for i, s := range segments {
-		segments[i] = url.PathEscape(s)
-	}
-	target := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s", g.apiURL, owner, repo, strings.Join(segments, "/"), url.QueryEscape(ref))
-	body, err := g.get(ctx, target, "application/vnd.github.raw+json")
+	body, err := g.get(ctx, g.contentsURL(owner, repo, path, ref), "application/vnd.github.raw+json")
 	return string(body), err
 }
 
@@ -141,7 +151,11 @@ func (e *apiError) Error() string {
 }
 
 func (g *github) get(ctx context.Context, target, accept string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	return g.do(ctx, http.MethodGet, target, accept)
+}
+
+func (g *github) do(ctx context.Context, method, target, accept string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -156,12 +170,12 @@ func (g *github) get(ctx context.Context, target, accept string) ([]byte, error)
 	}
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", target, err)
+		return nil, fmt.Errorf("%s %s: %w", method, target, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", target, err)
+		return nil, fmt.Errorf("%s %s: %w", method, target, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, &apiError{status: resp.StatusCode, target: target, body: strings.TrimSpace(firstLine(string(body)))}

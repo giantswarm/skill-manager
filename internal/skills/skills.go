@@ -20,8 +20,10 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"sigs.k8s.io/yaml"
 
+	"github.com/giantswarm/skill-manager/internal/lru"
 	"github.com/giantswarm/skill-manager/internal/tags"
 )
 
@@ -59,7 +61,10 @@ type Repository struct {
 	// some skills may be missing.
 	Truncated bool `json:"truncated"`
 	// Error is set when the repository could not be read at all.
-	Error     string     `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Stale is true when the last read failed (Error) and the skills,
+	// commit and FetchedAt are those of the last good read.
+	Stale     bool       `json:"stale,omitempty"`
 	FetchedAt *time.Time `json:"fetchedAt,omitempty"`
 }
 
@@ -81,6 +86,8 @@ type Config struct {
 	Tokens TokenSource
 	// CacheTTL keeps a repository's result before it is re-read.
 	CacheTTL time.Duration
+	// ErrorTTL keeps a failed read before it is retried (default 30s).
+	ErrorTTL time.Duration
 	// HTTPClient overrides the client (tests).
 	HTTPClient *http.Client
 	// Tags is the agent chart's tag rule, which a skill's tags follow as an
@@ -94,8 +101,36 @@ type Discoverer struct {
 	gh  *github
 	log *slog.Logger
 
-	mu    sync.Mutex
-	cache map[string]Repository
+	cache *lru.Cache[string, cacheEntry]
+	heads *lru.Cache[string, headEntry]
+	reads singleflight.Group
+}
+
+// cacheMax bounds the discovery and head caches: a source named in a
+// request may be any github.com repository.
+const cacheMax = 512
+
+// defaultErrorTTL is how long a failed read is answered before it is
+// retried.
+const defaultErrorTTL = 30 * time.Second
+
+// cacheEntry is a repository's listing until expires, and its last good
+// listing.
+type cacheEntry struct {
+	repo    Repository
+	expires time.Time
+	good    *Repository
+}
+
+// Head is what a source's ref resolves to now.
+type Head struct {
+	Commit  string
+	Private bool
+}
+
+type headEntry struct {
+	head    Head
+	expires time.Time
 }
 
 // New builds a discoverer.
@@ -103,24 +138,55 @@ func New(cfg Config, log *slog.Logger) *Discoverer {
 	if cfg.CacheTTL <= 0 {
 		cfg.CacheTTL = 5 * time.Minute
 	}
+	if cfg.ErrorTTL <= 0 {
+		cfg.ErrorTTL = defaultErrorTTL
+	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Discoverer{cfg: cfg, gh: newGitHub(cfg.APIURL, cfg.Tokens, cfg.HTTPClient), log: log, cache: map[string]Repository{}}
+	return &Discoverer{cfg: cfg, gh: newGitHub(cfg.APIURL, cfg.Tokens, cfg.HTTPClient), log: log,
+		cache: lru.New[string, cacheEntry](cacheMax), heads: lru.New[string, headEntry](cacheMax)}
 }
 
-// Repositories returns the configured repositories' URLs, each once; a
-// consumer that needs the ref, path or readOnly reads Sources.
-func (d *Discoverer) Repositories() []string {
-	out := make([]string, 0, len(d.cfg.Repositories))
-	seen := map[string]bool{}
-	for _, s := range d.cfg.Repositories {
-		if !seen[s.URL] {
-			seen[s.URL] = true
-			out = append(out, s.URL)
-		}
+// cacheKey is a source's key: its canonical repository URL, ref and path.
+func cacheKey(src Source) string {
+	return canonicalOrRaw(src.URL) + "@" + src.Ref + "#" + src.Path
+}
+
+// Head resolves src's ref (empty: the default branch) to its commit, with
+// the repository's visibility, without reading its skills; cached for the
+// cache TTL.
+func (d *Discoverer) Head(ctx context.Context, src Source) (Head, error) {
+	key := cacheKey(src)
+	if e, ok := d.heads.Get(key); ok && time.Now().Before(e.expires) {
+		return e.head, nil
 	}
-	return out
+	v, err, _ := d.reads.Do("head "+key, func() (any, error) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
+		defer cancel()
+		owner, name, err := parseRepoURL(src.URL)
+		if err != nil {
+			return Head{}, err
+		}
+		meta, err := d.gh.repository(ctx, owner, name)
+		if err != nil {
+			return Head{}, err
+		}
+		ref := src.Ref
+		if ref == "" {
+			ref = meta.DefaultBranch
+		}
+		commit := ref
+		if !CommitPattern.MatchString(ref) {
+			if commit, err = d.gh.headCommit(ctx, owner, name, ref); err != nil {
+				return Head{}, err
+			}
+		}
+		h := Head{Commit: commit, Private: meta.Private}
+		d.heads.Add(key, headEntry{head: h, expires: time.Now().Add(d.cfg.CacheTTL)})
+		return h, nil
+	})
+	return v.(Head), err
 }
 
 // Sources returns the configured repositories.
@@ -189,48 +255,58 @@ func (d *Discoverer) List(ctx context.Context, repository, ref string, refresh b
 }
 
 func (d *Discoverer) discover(ctx context.Context, src Source, refresh bool) Repository {
-	repoURL, ref := src.URL, src.Ref
-	key := repoURL + "@" + ref + "#" + src.Path
-	d.mu.Lock()
-	cached, ok := d.cache[key]
-	d.mu.Unlock()
-	if ok && !refresh && cached.FetchedAt != nil && time.Since(*cached.FetchedAt) < d.cfg.CacheTTL {
-		return cached
+	key := cacheKey(src)
+	cached, ok := d.cache.Get(key)
+	if ok && !refresh && time.Now().Before(cached.expires) {
+		return cached.repo
 	}
+	// One read per source at a time: concurrent callers share it.
+	v, _, _ := d.reads.Do("read "+key, func() (any, error) {
+		return d.reread(ctx, key, src, cached, ok && !refresh), nil
+	})
+	return v.(Repository)
+}
 
+// reread reads src again; renew allows an expired good entry whose ref
+// still points at the same commit to be renewed with two requests instead
+// of re-reading every SKILL.md. A failed read keeps the last good listing,
+// stale, and is retried after the error TTL.
+func (d *Discoverer) reread(ctx context.Context, key string, src Source, cached cacheEntry, renew bool) Repository {
+	repoURL, ref := src.URL, src.Ref
 	// The read outlives the caller: a client that gives up (muster answers
 	// after 30 s) must not leave a half-read listing in the cache, and the
 	// next call finds the finished one.
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
 	defer cancel()
-	// An expired entry whose ref still points at the same commit is renewed
-	// with two requests instead of re-reading every SKILL.md.
-	if ok && !refresh && cached.Error == "" && !cached.Truncated && cached.Commit != "" {
-		if head, err := d.headOf(readCtx, repoURL, ref); err == nil && head == cached.Commit {
+	if renew && cached.good != nil && cached.repo.Error == "" && !cached.repo.Truncated && cached.repo.Commit != "" {
+		if head, err := d.headOf(readCtx, repoURL, ref); err == nil && head == cached.repo.Commit {
 			now := time.Now()
-			cached.FetchedAt = &now
-			d.mu.Lock()
-			d.cache[key] = cached
-			d.mu.Unlock()
-			return cached
+			repo := cached.repo
+			repo.FetchedAt = &now
+			d.cache.Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.CacheTTL), good: &repo})
+			return repo
 		}
 	}
 
 	repo, err := d.read(readCtx, src)
 	now := time.Now()
-	repo.FetchedAt = &now
-	if err != nil {
-		repo.RepoURL = repoURL
-		repo.Ref = ref
-		repo.Path = src.Path
-		repo.ReadOnly = src.ReadOnly
-		repo.Skills = []Skill{}
-		repo.Error = err.Error()
-		d.log.Warn("skill discovery failed", "repository", repoURL, "error", err)
+	if err == nil {
+		repo.FetchedAt = &now
+		d.cache.Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.CacheTTL), good: &repo})
+		return repo
 	}
-	d.mu.Lock()
-	d.cache[key] = repo
-	d.mu.Unlock()
+	d.log.Warn("skill discovery failed", "repository", repoURL, "error", err)
+	if prev, ok := d.cache.Get(key); ok && prev.good != nil {
+		cached = prev
+	}
+	if cached.good != nil {
+		repo = *cached.good
+		repo.Stale = true
+	} else {
+		repo = Repository{RepoURL: repoURL, Ref: ref, Path: src.Path, ReadOnly: src.ReadOnly, Skills: []Skill{}, FetchedAt: &now}
+	}
+	repo.Error = err.Error()
+	d.cache.Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.ErrorTTL), good: cached.good})
 	return repo
 }
 

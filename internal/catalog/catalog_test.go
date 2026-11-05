@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -155,7 +156,7 @@ func TestSourcesReportTheirCommit(t *testing.T) {
 	p := &catalogtest.Pinner{}
 	repos := []skills.Repository{
 		{RepoURL: catalogtest.SkillsRepo, Ref: "v1.2.0", Path: "skills", ReadOnly: true, Commit: catalogtest.TagHead},
-		{RepoURL: catalogtest.PrivateRepo, Ref: "main", Commit: catalogtest.MainHead, Private: true},
+		{RepoURL: catalogtest.PrivateRepo, Commit: catalogtest.MainHead, Private: true},
 		{RepoURL: "https://github.com/giantswarm/gone", Error: "GitHub answered 404"},
 	}
 	svc := New(catalogtest.Lister{Repos: repos}, p)
@@ -163,7 +164,7 @@ func TestSourcesReportTheirCommit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []Source{
 		{URL: catalogtest.SkillsRepo, Ref: "v1.2.0", Path: "skills", ReadOnly: true, Commit: catalogtest.TagHead},
-		{URL: catalogtest.PrivateRepo, Ref: "main", Error: got[1].Error},
+		{URL: catalogtest.PrivateRepo, Error: got[1].Error},
 		{URL: "https://github.com/giantswarm/gone", Error: "GitHub answered 404"},
 	}, got)
 	assert.Contains(t, got[1].Error, "cannot read it")
@@ -199,4 +200,33 @@ func TestResolveForTheServiceCallerSkipsTheReadabilityCheck(t *testing.T) {
 	for _, c := range p.Calls() {
 		assert.NotContains(t, c, "readable")
 	}
+}
+
+// Paths are cleaned as source paths are: "." is the root, a trailing or
+// doubled slash goes, and the cleaned path is what comes back.
+func TestResolveCleansPaths(t *testing.T) {
+	svc, _ := newService()
+	got, err := svc.Resolve(t.Context(), Request{Skills: []Item{
+		gitSkill("x", catalogtest.SkillsRepo, "", "./skills//x/"),
+		gitSkill("root", catalogtest.SkillsRepo, "", "."),
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, "skills/x", got.Skills[0].Path)
+	assert.Equal(t, "", got.Skills[1].Path)
+	_, err = svc.Resolve(t.Context(), Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "", "skills/../../x")}})
+	assert.ErrorIs(t, err, ErrInvalid)
+}
+
+// A commit given with no path to check is checked to exist; a plugin's format
+// is read only at a commit that exists.
+func TestResolveChecksAGivenCommit(t *testing.T) {
+	svc, p := newService()
+	got, err := svc.Resolve(t.Context(), Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo, Commit: catalogtest.TagHead}}}})
+	require.NoError(t, err)
+	assert.Equal(t, catalogtest.TagHead, got.Skills[0].Git.Commit)
+	assert.Contains(t, p.Calls(), "commit "+catalogtest.SkillsRepo+"@"+catalogtest.TagHead)
+
+	unknown := strings.Repeat("b", 40)
+	_, err = svc.Resolve(t.Context(), Request{Plugins: []Item{{Git: &Git{URL: catalogtest.SkillsRepo, Commit: unknown}}}})
+	assert.ErrorIs(t, err, ErrNotFound)
 }

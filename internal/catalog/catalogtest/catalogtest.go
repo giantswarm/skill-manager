@@ -96,9 +96,9 @@ func (p *Pinner) GitCalls() []string {
 	return out
 }
 
-// Lister is the discoverer over a fixed listing.
+// Lister is the discoverer over a fixed listing: its repositories are the
+// configured sources, their commit is the head, their error the head's.
 type Lister struct {
-	*skills.Discoverer
 	Repos []skills.Repository
 	// Observe, when set, sees every List's repository and refresh.
 	Observe func(repository string, refresh bool)
@@ -122,4 +122,39 @@ func (p *Pinner) Calls() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.calls...)
+}
+
+// SourceRef is no configured source's ref.
+func (l Lister) SourceRef(string, string) string { return "" }
+
+// Sources are the listing's repositories.
+func (l Lister) Sources() []skills.Source {
+	out := make([]skills.Source, 0, len(l.Repos))
+	for _, r := range l.Repos {
+		out = append(out, skills.Source{URL: r.RepoURL, Ref: r.Ref, Path: r.Path, ReadOnly: r.ReadOnly})
+	}
+	return out
+}
+
+// Head is the listed repository's commit, or its error.
+func (l Lister) Head(_ context.Context, src skills.Source) (skills.Head, error) {
+	for _, r := range l.Repos {
+		if r.RepoURL == src.URL {
+			if r.Error != "" {
+				return skills.Head{}, fmt.Errorf("%s", r.Error)
+			}
+			return skills.Head{Commit: r.Commit, Private: r.Private}, nil
+		}
+	}
+	return skills.Head{}, fmt.Errorf("%w: %s", skills.ErrNotFound, src.URL)
+}
+
+// CommitExists knows the fake's three commits.
+func (p *Pinner) CommitExists(_ context.Context, repoURL, commit string) error {
+	p.record("commit " + repoURL + "@" + commit)
+	switch commit {
+	case MainHead, FeatureHead, TagHead:
+		return nil
+	}
+	return fmt.Errorf("%w: %w: commit %s of %s", skills.ErrUnresolvable, skills.ErrNotFound, commit, repoURL)
 }

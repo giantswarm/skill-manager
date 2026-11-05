@@ -44,15 +44,14 @@ func fakeGitHub(t *testing.T) (*httptest.Server, *int) {
 	})
 	mux.HandleFunc("/repos/giantswarm/agent-skills/commits/", func(w http.ResponseWriter, r *http.Request) {
 		count()
-		switch strings.TrimPrefix(r.URL.Path, "/repos/giantswarm/agent-skills/commits/") {
-		case "main":
-			_ = json.NewEncoder(w).Encode(map[string]any{"sha": headCommit})
-		case "feature":
-			_ = json.NewEncoder(w).Encode(map[string]any{"sha": featureCommit})
-		case "v1.2.0":
-			_ = json.NewEncoder(w).Encode(map[string]any{"sha": tagCommit})
-		default:
+		sha := map[string]string{"main": headCommit, "feature": featureCommit, "v1.2.0": tagCommit, headCommit: headCommit, featureCommit: featureCommit, tagCommit: tagCommit}[strings.TrimPrefix(r.URL.Path, "/repos/giantswarm/agent-skills/commits/")]
+		switch {
+		case sha == "":
 			http.Error(w, `{"message":"No commit found for SHA: nope"}`, http.StatusUnprocessableEntity)
+		case r.Header.Get("Accept") == "application/vnd.github.sha":
+			_, _ = w.Write([]byte(sha))
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha})
 		}
 	})
 	mux.HandleFunc("/repos/giantswarm/agent-skills/git/trees/"+headCommit, func(w http.ResponseWriter, _ *http.Request) {
@@ -148,7 +147,7 @@ func fakeGitHub(t *testing.T) (*httptest.Server, *int) {
 	})
 	mux.HandleFunc("/repos/giantswarm/private-skills/commits/trunk", func(w http.ResponseWriter, _ *http.Request) {
 		count()
-		_ = json.NewEncoder(w).Encode(map[string]any{"sha": tagCommit})
+		_, _ = w.Write([]byte(tagCommit))
 	})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -415,7 +414,11 @@ func TestRequireReadableGatesPrivateRepositoriesOnThePerson(t *testing.T) {
 	}
 	err := r.RequireReadable(ctx, private, "")
 	require.ErrorIs(t, err, ErrNotReadable, "an unknown person cannot be checked, so a private repository is refused")
-	assert.Contains(t, err.Error(), "core_auth_login server=skill-manager")
+	assert.Contains(t, err.Error(), "you cannot read")
+	assert.NotContains(t, err.Error(), "core_auth_login", "no sign-in to suggest without the GitHub pin")
+	err = NewResolver(ts.URL, StaticToken("secret"), nil, nil).WithSignIn("skill-manager").RequireReadable(ctx, private, "")
+	require.ErrorIs(t, err, ErrNotReadable)
+	assert.Contains(t, err.Error(), "core_auth_login server=skill-manager", "with the pin, how to connect")
 
 	before := *hits
 	require.NoError(t, r.RequireReadable(ctx, private, "Alice"), "logins are case-insensitive")

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 
@@ -34,6 +35,10 @@ type Lister interface {
 	// SourceRef is the ref of the configured source holding path of
 	// repoURL; "" for none or the default branch.
 	SourceRef(repoURL, path string) string
+	// Sources are the configured sources.
+	Sources() []skills.Source
+	// Head is what a source's ref resolves to now, without its skills.
+	Head(ctx context.Context, src skills.Source) (skills.Head, error)
 }
 
 // Pinner resolves mutable references to pins (skills.Resolver).
@@ -43,6 +48,7 @@ type Pinner interface {
 	RequireReadable(ctx context.Context, repoURL, login string) error
 	ClaudeFormatPlugin(ctx context.Context, repoURL, commit, path string) (bool, error)
 	PathExists(ctx context.Context, repoURL, commit, path string) (bool, error)
+	CommitExists(ctx context.Context, repoURL, commit string) error
 }
 
 // Service is the catalog.
@@ -67,16 +73,32 @@ type Source struct {
 	Error string `json:"error,omitempty"`
 }
 
-// Sources lists the configured sources from the (cached) discovery.
+// Sources lists the configured sources, each with the commit its ref
+// resolves to now (cached for the cache TTL), without reading their skills.
+// A private source's commit is shown only to a caller who can read it.
 func (s *Service) Sources(ctx context.Context) ([]Source, error) {
-	res, err := s.List(ctx, "", false)
-	if err != nil {
-		return nil, err
+	list := s.skills.Sources()
+	out := make([]Source, len(list))
+	var wg sync.WaitGroup
+	for i, src := range list {
+		out[i] = Source{URL: src.URL, Ref: src.Ref, Path: src.Path, ReadOnly: src.ReadOnly}
+		wg.Go(func() {
+			head, err := s.skills.Head(ctx, src)
+			switch {
+			case err != nil:
+				out[i].Error = err.Error()
+			case head.Private && !identity.IsService(ctx):
+				if err := s.pinner.RequireReadable(ctx, src.URL, gitHubLogin(ctx)); err != nil {
+					out[i].Error = err.Error()
+					return
+				}
+				out[i].Commit = head.Commit
+			default:
+				out[i].Commit = head.Commit
+			}
+		})
 	}
-	out := make([]Source, 0, len(res.Repositories))
-	for _, r := range res.Repositories {
-		out = append(out, Source{URL: r.RepoURL, Ref: r.Ref, Path: r.Path, ReadOnly: r.ReadOnly, Commit: r.Commit, Error: r.Error})
-	}
+	wg.Wait()
 	return out, nil
 }
 
@@ -161,14 +183,18 @@ func (e *ItemError) Unwrap() error { return e.Err }
 // service caller is exempt), and every path must exist at its commit. The
 // first refused item fails the whole request.
 func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
+	req.Skills = append([]Item(nil), req.Skills...)
+	req.Plugins = append([]Item(nil), req.Plugins...)
 	for _, l := range []struct {
 		name  string
 		items []Item
 	}{{"skills", req.Skills}, {"plugins", req.Plugins}} {
 		for i, it := range l.items {
-			if err := validate(it, l.name == "skills"); err != nil {
+			cleaned, err := validate(it, l.name == "skills")
+			if err != nil {
 				return nil, &ItemError{List: l.name, Index: i, Err: fmt.Errorf("%w: %v", ErrInvalid, err)}
 			}
+			l.items[i] = cleaned
 		}
 	}
 	r := &resolution{svc: s, login: gitHubLogin(ctx), service: identity.IsService(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
@@ -183,48 +209,53 @@ func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
 	return out, nil
 }
 
-// validate checks what needs no lookup.
-func validate(it Item, skill bool) error {
+// validate checks what needs no lookup and returns the item with its path
+// cleaned as a source's is: relative, "." the root, never climbing out.
+func validate(it Item, skill bool) (Item, error) {
 	switch {
 	case it.Git != nil && it.OCI != nil:
-		return errors.New("has both git and oci; give exactly one source")
+		return it, errors.New("has both git and oci; give exactly one source")
 	case it.Git == nil && it.OCI == nil:
-		return errors.New("has no source: give git: {url, ref | commit} or oci: {ref}")
+		return it, errors.New("has no source: give git: {url, ref | commit} or oci: {ref}")
 	case it.Git != nil:
 		g := it.Git
 		switch {
 		case strings.TrimSpace(g.URL) == "":
-			return errors.New("git.url is required")
+			return it, errors.New("git.url is required")
 		case g.Ref != "" && g.Commit != "":
-			return fmt.Errorf("gives both ref %q and commit %q; give the commit to keep, or the ref to have it resolved", g.Ref, g.Commit)
+			return it, fmt.Errorf("gives both ref %q and commit %q; give the commit to keep, or the ref to have it resolved", g.Ref, g.Commit)
 		case g.Commit != "" && !skills.CommitPattern.MatchString(g.Commit):
-			return fmt.Errorf("git.commit %q is not a full commit id (40 or 64 hex characters)", g.Commit)
+			return it, fmt.Errorf("git.commit %q is not a full commit id (40 or 64 hex characters)", g.Commit)
 		case strings.ContainsAny(g.Ref, " \t\n"):
-			return fmt.Errorf("git.ref %q contains whitespace", g.Ref)
+			return it, fmt.Errorf("git.ref %q contains whitespace", g.Ref)
 		}
 	default:
 		if _, err := oci.ParseImageReference(it.OCI.Ref); err != nil {
-			return fmt.Errorf("oci.ref: %v", err)
+			return it, fmt.Errorf("oci.ref: %v", err)
 		}
 		if skill && it.Path != "" {
-			return errors.New("path is for git skills; an OCI skill is the whole image")
+			return it, errors.New("path is for git skills; an OCI skill is the whole image")
 		}
 		if it.ClaudeFormat != nil && *it.ClaudeFormat {
-			return errors.New("claudeFormat is checked for git plugins only")
+			return it, errors.New("claudeFormat is checked for git plugins only")
 		}
 	}
 	if skill && it.ClaudeFormat != nil {
-		return errors.New("claudeFormat is for plugins")
+		return it, errors.New("claudeFormat is for plugins")
 	}
-	if strings.HasPrefix(it.Path, "/") {
-		return fmt.Errorf("path %q must be relative to the repository root", it.Path)
+	raw := strings.TrimSpace(it.Path)
+	if strings.HasPrefix(raw, "/") {
+		return it, fmt.Errorf("path %q must be relative to the repository root", it.Path)
 	}
-	for _, seg := range strings.Split(it.Path, "/") {
+	for _, seg := range strings.Split(raw, "/") {
 		if seg == ".." {
-			return fmt.Errorf("path %q must not climb out of the repository", it.Path)
+			return it, fmt.Errorf("path %q must not climb out of the repository", it.Path)
 		}
 	}
-	return nil
+	if it.Path = path.Clean(raw); it.Path == "." {
+		it.Path = ""
+	}
+	return it, nil
 }
 
 // resolution is one Resolve: each repository ref, readability and path is
@@ -274,6 +305,12 @@ func (r *resolution) item(ctx context.Context, it Item, plugin bool) (Item, erro
 		return Item{}, err
 	}
 	commit := it.Git.Commit
+	if commit != "" && strings.Trim(it.Path, "/") == "" {
+		// No path check touches a given commit: ask for it.
+		if err := r.svc.pinner.CommitExists(ctx, url, commit); err != nil {
+			return Item{}, classify(err)
+		}
+	}
 	if commit == "" {
 		ref := it.Git.Ref
 		if ref == "" {
