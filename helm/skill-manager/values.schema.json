@@ -285,11 +285,8 @@
                             "description": "MCPServer CR name (drives the tool prefix)."
                         },
                         "timeout": {
-                            "type": [
-                                "integer",
-                                "null"
-                            ],
-                            "description": "How long muster waits for a tool's answer, in seconds (the MCPServer's `spec.timeout`, 1 to 300); unset keeps muster's default, 30 seconds.",
+                            "type": "integer",
+                            "description": "How long muster waits for a tool's answer, in seconds (the MCPServer's `spec.timeout`, 1 to 300): muster's default.",
                             "maximum": 300,
                             "minimum": 1
                         }
