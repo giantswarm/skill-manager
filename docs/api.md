@@ -40,7 +40,7 @@ Anything else is `401`. The ID token is validated before GitHub is asked about a
 - The first refused item fails the whole call.
 - A git plugin is answered with `claudeFormat` (a `.claude-plugin/plugin.json` and no root `plugin.json`); `claudeFormat: true` in the request refuses one that is not.
 
-Errors: `{"error": "...", "item": <index>, "list": "skills" | "plugins"}`.
+Errors: `{"error": "...", "item": <index>, "list": "skills" | "plugins"}`; `item` and `list` name the refused item, `error` is the cause alone.
 
 | Status | When |
 |---|---|

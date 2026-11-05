@@ -304,7 +304,7 @@
             "properties": {
                 "allowInternet": {
                     "type": "boolean",
-                    "description": "Allow egress on 443 to every destination: GitHub, OCI registries and Dex. Vanilla NetworkPolicy cannot select by name; narrow with egressCIDRs instead when the addresses are known."
+                    "description": "Allow egress on 443 to every destination: GitHub, OCI registries and an external Dex. Vanilla NetworkPolicy cannot select by name; narrow with egressCIDRs instead when the addresses are known. With `oauth.enabled`, Dex's own port is opened from its issuer URL as well: its namespace for an in-cluster `<svc>.<namespace>.svc` host (e.g. port 5556), every address otherwise."
                 },
                 "egressCIDRs": {
                     "type": "array",

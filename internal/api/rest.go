@@ -85,7 +85,8 @@ func (h *REST) writeError(w http.ResponseWriter, err error) {
 	body := errorBody{Error: err.Error()}
 	var item *catalog.ItemError
 	if errors.As(err, &item) {
-		body.Item, body.List = &item.Index, item.List
+		// item and list name it: the message is the cause alone.
+		body.Error, body.Item, body.List = item.Err.Error(), &item.Index, item.List
 	}
 	status := statusOf(err)
 	if status >= http.StatusInternalServerError {

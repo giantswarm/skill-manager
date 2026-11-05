@@ -62,7 +62,7 @@ Owns the Agent Platform's skill sources, lists their skills and pins skills and 
 | muster.mcpServer.auth.github.authorizationServer.grantScope | string | `"subject"` | `subject`: the grant belongs to the person. |
 | networkPolicy.enabled | bool | `true` | Create a Kubernetes NetworkPolicy for the pod. |
 | networkPolicy.ingressNamespaces | list | `[]` | Namespaces allowed to reach the MCP endpoint and the REST API (label kubernetes.io/metadata.name), besides the release namespace. List muster's, agent-manager's and the portal's namespaces when they run elsewhere, or they cannot reach the server. |
-| networkPolicy.allowInternet | bool | `true` | Allow egress on 443 to every destination: GitHub, OCI registries and Dex. Vanilla NetworkPolicy cannot select by name; narrow with egressCIDRs instead when the addresses are known. |
+| networkPolicy.allowInternet | bool | `true` | Allow egress on 443 to every destination: GitHub, OCI registries and an external Dex. Vanilla NetworkPolicy cannot select by name; narrow with egressCIDRs instead when the addresses are known. With `oauth.enabled`, Dex's own port is opened from its issuer URL as well: its namespace for an in-cluster `<svc>.<namespace>.svc` host (e.g. port 5556), every address otherwise. |
 | networkPolicy.egressCIDRs | list | `[]` | Extra egress CIDRs. |
 | networkPolicy.metricsNamespaces | list | `["kube-system"]` | Namespaces allowed to scrape the metrics port (label kubernetes.io/metadata.name), when `observability.metrics.enabled`. |
 | serviceAccount.create | bool | `true` | Create a ServiceAccount. |

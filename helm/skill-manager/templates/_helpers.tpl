@@ -169,3 +169,30 @@ namespace: {{ $namespace | quote }}
 port: {{ $port }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Dex as egress, with oauth.enabled: the issuer's port (else 443 for https, 80
+for http) and the namespace of an in-cluster Service host
+(<svc>.<ns>.svc[.cluster.local]), empty for any other host. The 443 rule of
+networkPolicy.allowInternet does not reach an in-cluster Dex on its own port.
+*/}}
+{{- define "skill-manager.dexEgress" -}}
+{{- if .Values.oauth.enabled -}}
+{{- $g := include "skill-manager.globalIdentity" . | fromJson -}}
+{{- with (.Values.oauth.dex.issuerURL | default (dig "issuerUrl" "" $g)) -}}
+{{- $url := urlParse . -}}
+{{- $hostPort := splitList ":" $url.host -}}
+{{- $port := ternary (last $hostPort) "" (gt (len $hostPort) 1) -}}
+{{- if not $port -}}
+{{- $port = ternary "80" "443" (eq $url.scheme "http") -}}
+{{- end -}}
+{{- $labels := splitList "." (first $hostPort) -}}
+{{- $namespace := "" -}}
+{{- if and (ge (len $labels) 3) (eq (index $labels 2) "svc") -}}
+{{- $namespace = index $labels 1 -}}
+{{- end -}}
+namespace: {{ $namespace | quote }}
+port: {{ $port }}
+{{- end -}}
+{{- end -}}
+{{- end -}}

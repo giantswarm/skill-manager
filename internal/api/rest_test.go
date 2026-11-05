@@ -86,6 +86,7 @@ func TestRESTResolveRefusals(t *testing.T) {
 			status, out := post(t, ts.URL+"/v1/resolve", tc.body)
 			assert.Equal(t, tc.status, status, out)
 			assert.NotEmpty(t, out["error"])
+			assert.NotContains(t, out["error"], tc.list+"[", "item and list name the item; the message does not repeat it")
 			assert.Equal(t, tc.item, out["item"])
 			assert.Equal(t, tc.list, out["list"])
 		})

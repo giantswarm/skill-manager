@@ -29,3 +29,47 @@ tests:
             namespaceSelector:
               matchLabels:
                 kubernetes.io/metadata.name: muster
+
+  - it: opens egress to an in-cluster Dex on its own port, from the issuer
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: http://dex.dex.svc.cluster.local:5556/dex
+          clientId: platform-client
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: dex
+            ports:
+              - protocol: TCP
+                port: 5556
+
+  - it: opens egress to an external Dex on a port other than 443
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+        dex:
+          issuerURL: https://dex.127.0.0.1.nip.io:8443
+      global:
+        domain: example.com
+        identity:
+          clientId: platform-client
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - ipBlock:
+                  cidr: 0.0.0.0/0
+            ports:
+              - protocol: TCP
+                port: 8443
