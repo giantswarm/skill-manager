@@ -34,12 +34,15 @@ func newGitHub(apiURL string, tokens TokenSource, client *http.Client) *github {
 	return &github{apiURL: strings.TrimRight(apiURL, "/"), tokens: tokens, http: client}
 }
 
-var repoURLRe = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$`)
+// repoURLRe takes the characters GitHub allows in an owner and a repository
+// name only: both go into API paths, which must not carry a query, a
+// fragment, an escape or a dot segment.
+var repoURLRe = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+?)(?:\.git)?/?$`)
 
 // parseRepoURL splits https://github.com/<owner>/<repo>.
 func parseRepoURL(repoURL string) (owner, repo string, err error) {
 	m := repoURLRe.FindStringSubmatch(strings.TrimSpace(repoURL))
-	if m == nil {
+	if m == nil || m[2] == "." || m[2] == ".." {
 		return "", "", fmt.Errorf("not a github.com repository URL: %s (expected https://github.com/<owner>/<repo>)", repoURL)
 	}
 	return m[1], m[2], nil

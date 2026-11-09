@@ -28,7 +28,8 @@ func TestParseImageReference(t *testing.T) {
 	pinned, _ := oci.ParseImageReference("ghcr.io/giantswarm/skills/kubectl:1.4.0@" + digest)
 	assert.Equal(t, "ghcr.io/giantswarm/skills/kubectl@"+digest, pinned.Pinned(), "the pinned form drops the tag")
 
-	for _, bad := range []string{"", "kubectl:1.4.0", "skills/kubectl:1.4.0", "ghcr.io/", "ghcr.io/x@sha256:short", "ghcr.io/a b:1", "ghcr.io//x"} {
+	for _, bad := range []string{"", "kubectl:1.4.0", "skills/kubectl:1.4.0", "ghcr.io/", "ghcr.io/x@sha256:short", "ghcr.io/a b:1", "ghcr.io//x",
+		"gsoci.azurecr.io/../v2/x:1", "gsoci.azurecr.io/a/./b:1", "gsoci.azurecr.io/a?b=c:1", "gsoci.azurecr.io/a#b:1", "gsoci.azurecr.io/a%2Fb:1", "gsoci.azurecr.io/Upper:1", "gsoci.azurecr.io/a:t?x", "gsoci.azurecr.io/a:.t"} {
 		_, err := oci.ParseImageReference(bad)
 		assert.Error(t, err, bad)
 	}

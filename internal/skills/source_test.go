@@ -63,3 +63,25 @@ func TestSourcesAreTheConfiguredOnes(t *testing.T) {
 	}}, nil)
 	assert.Len(t, d.Sources(), 3)
 }
+
+// A repository URL takes GitHub's owner and name characters only: both go
+// into API paths.
+func TestParseRepoURLRefusesWhatIsNoGitHubName(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/giantswarm/agent-skills":      "giantswarm/agent-skills",
+		"https://github.com/giantswarm/agent-skills.git/": "giantswarm/agent-skills",
+		"https://github.com/Giant-Swarm/a.b_c":            "Giant-Swarm/a.b_c",
+	} {
+		owner, repo, err := parseRepoURL(in)
+		assert.NoError(t, err, in)
+		assert.Equal(t, want, owner+"/"+repo, in)
+	}
+	for _, bad := range []string{
+		"https://github.com/../orgs", "https://github.com/a/..", "https://github.com/a/.",
+		"https://github.com/a/b?x=1", "https://github.com/a/b#x", "https://github.com/a/b%2F..%2Fc",
+		"https://github.com/-a/b", "http://github.com/a/b", "https://github.com/a",
+	} {
+		_, _, err := parseRepoURL(bad)
+		assert.Error(t, err, bad)
+	}
+}

@@ -41,6 +41,14 @@ var (
 // digestPattern is a sha256 digest as the registry reports it.
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+// repositoryPattern and tagPattern are the OCI distribution spec's grammar
+// for a repository name and a tag: both go into the manifest URL, which must
+// not carry a query, a fragment, an escape or a dot segment.
+var (
+	repositoryPattern = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
+	tagPattern        = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
+)
+
 // Reference is a parsed registry repository.
 type Reference struct {
 	// Host is the registry host, e.g. gsoci.azurecr.io.
@@ -93,6 +101,12 @@ func ParseImageReference(ref string) (ImageReference, error) {
 	}
 	if rest == "" || strings.HasPrefix(rest, "/") || strings.HasSuffix(rest, "/") {
 		return ImageReference{}, fmt.Errorf("OCI reference %q has no repository", ref)
+	}
+	if !repositoryPattern.MatchString(rest) {
+		return ImageReference{}, fmt.Errorf("OCI reference %q: repository %q is not a valid OCI repository name", ref, rest)
+	}
+	if out.Tag != "" && !tagPattern.MatchString(out.Tag) {
+		return ImageReference{}, fmt.Errorf("OCI reference %q: tag %q is not a valid OCI tag", ref, out.Tag)
 	}
 	out.Repository = rest
 	return out, nil
