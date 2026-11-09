@@ -38,6 +38,12 @@ type Lister interface {
 	Sources() []skills.Source
 	// Head is what a source's ref resolves to now, without its skills.
 	Head(ctx context.Context, src skills.Source) (skills.Head, error)
+	// Holds reports whether a configured source holds dir of repoURL.
+	Holds(repoURL, dir string) bool
+	// Skill reads a skill's SKILL.md and file list at a full commit.
+	Skill(ctx context.Context, repoURL, commit, dir string) (*skills.SkillContent, error)
+	// SkillFile reads one file of a skill at a full commit.
+	SkillFile(ctx context.Context, repoURL, commit, dir, file string) (*skills.FileContent, error)
 }
 
 // Pinner resolves mutable references to pins (skills.Resolver).
@@ -137,7 +143,7 @@ func (s *Service) visible(ctx context.Context, repo skills.Repository) skills.Re
 	if !s.configured(repo.RepoURL) {
 		msg = repo.RepoURL + " does not exist or you cannot read it"
 	}
-	return skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: repo.Private, Skills: []skills.Skill{}, Error: msg, FetchedAt: repo.FetchedAt}
+	return skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: repo.Private, Skills: []skills.Skill{}, Plugins: []skills.Plugin{}, Error: msg, FetchedAt: repo.FetchedAt}
 }
 
 // configured reports whether repoURL is a configured source's repository.

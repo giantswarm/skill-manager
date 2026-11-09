@@ -4,9 +4,80 @@ Generated from the registered tools (`make tools-doc`); through muster every too
 
 | Tool | Kind |
 |---|---|
+| `get_skill` | read-only |
+| `get_skill_file` | read-only |
 | `list_skill_sources` | read-only |
 | `list_skills` | read-only |
 | `resolve_skills` | read-only |
+
+## `get_skill`
+
+```text
+Read one skill of the catalogue at a commit: its SKILL.md and its files.
+
+Returns name, description, tags, instructions (the body below the frontmatter) and files (path, size, sha; SKILL.md first, at most 200, filesTruncated past that). A file below a nested SKILL.md belongs to that skill. Only a full commit id, only below a configured source, and a private repository only for a caller who can read it.
+```
+
+```json
+{
+  "properties": {
+    "commit": {
+      "description": "Full commit id, as list_skills reports it",
+      "type": "string"
+    },
+    "path": {
+      "description": "The skill directory; empty is the repository root",
+      "type": "string"
+    },
+    "url": {
+      "description": "https://github.com/<owner>/<repo>, a configured source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url",
+    "commit"
+  ],
+  "type": "object"
+}
+```
+
+## `get_skill_file`
+
+```text
+Read one file of a skill at a commit.
+
+Returns path, size, sha, binary, truncated, and content for a text file of at most 512 KiB. The file must be one get_skill lists; the same checks as get_skill apply.
+```
+
+```json
+{
+  "properties": {
+    "commit": {
+      "description": "Full commit id",
+      "type": "string"
+    },
+    "file": {
+      "description": "Path relative to the skill directory, e.g. references/style.md",
+      "type": "string"
+    },
+    "path": {
+      "description": "The skill directory; empty is the repository root",
+      "type": "string"
+    },
+    "url": {
+      "description": "https://github.com/<owner>/<repo>, a configured source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url",
+    "commit",
+    "file"
+  ],
+  "type": "object"
+}
+```
 
 ## `list_skill_sources`
 
@@ -29,7 +100,7 @@ Per source: url, ref (empty: the default branch), path scanned, readOnly, commit
 ```text
 List the skills of the configured skill sources, with each source's commit.
 
-Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds.
+Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags; per plugin its name, path and format (agent-plugins: root plugin.json, select its skills by name; claude-code: .claude-plugin/plugin.json, loaded whole). Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds.
 ```
 
 ```json
