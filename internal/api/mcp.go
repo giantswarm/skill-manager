@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -113,7 +114,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 
 	s.AddTool(mcp.NewTool(ToolListSkills,
 		tooldesc.Describe("List the skills of the configured skill sources, with each source's commit.",
-			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads GitHub."),
+			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds."),
 		readOnly(),
 		mcp.WithString("source", mcp.Description("Only this repository, any https://github.com/<owner>/<repo>; a configured one keeps its ref and path. Default: every source")),
 		mcp.WithBoolean("refresh", mcp.Description("Bypass the cache")),
@@ -132,8 +133,8 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 		mcp.WithArray("skills", mcp.Description("Skills: {name, path, git: {url, ref | commit}} or {name, oci: {ref}}"), mcp.Items(itemSchema)),
 		mcp.WithArray("plugins", mcp.Description("Plugins: {path, skills, git: {url, ref | commit}} or {skills, oci: {ref}}"), mcp.Items(itemSchema)),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var in catalog.Request
-		if err := req.BindArguments(&in); err != nil {
+		in, err := decodeRequest(req.GetArguments())
+		if err != nil {
 			return mcp.NewToolResultError("invalid arguments: " + err.Error()), nil
 		}
 		res, err := svc.Resolve(ctx, in)
@@ -143,6 +144,20 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 		return jsonResult(res)
 	})
 	return s
+}
+
+// decodeRequest reads resolve_skills' arguments as POST /v1/resolve reads its
+// body: an unknown field is refused, not dropped.
+func decodeRequest(args map[string]any) (catalog.Request, error) {
+	var in catalog.Request
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return in, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	err = dec.Decode(&in)
+	return in, err
 }
 
 // jsonResult is v as the structured result and as its JSON text.

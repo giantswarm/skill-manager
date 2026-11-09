@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -84,4 +85,10 @@ func TestParseRepoURLRefusesWhatIsNoGitHubName(t *testing.T) {
 		_, _, err := parseRepoURL(bad)
 		assert.Error(t, err, bad)
 	}
+}
+
+// An upstream answer reaches an error bounded, whatever its first line.
+func TestFirstLineIsBounded(t *testing.T) {
+	assert.Len(t, firstLine(strings.Repeat("x", 5000)+"\nmore"), maxErrorBody)
+	assert.Equal(t, "short", firstLine("short\nrest"))
 }

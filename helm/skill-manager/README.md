@@ -28,7 +28,7 @@ Owns the Agent Platform's skill sources, lists their skills and pins skills and 
 | github.tokenSecret.name | string | `""` | Existing Secret in the release namespace with a static GitHub token. Prefer `app`. Empty (and no `app`): anonymous, public repositories only. |
 | github.tokenSecret.key | string | `"token"` | Key of the token in that Secret. |
 | cacheTTL | string | `"5m"` | How long a source's discovered skills and head commit are reused. A failed read is retried after 30 seconds and keeps the last good listing. |
-| oci.registries | list | `["gsoci.azurecr.io","gsociprivate.azurecr.io"]` | The registries (host or host:port) an OCI skill or plugin may come from. No other registry, and none by IP address, is asked; a token realm must be on the registry or another listed host. |
+| oci.registries | list | `["gsoci.azurecr.io","gsociprivate.azurecr.io"]` | The registries (host or host:port) an OCI skill or plugin may come from. No other registry, and none by IP address, is asked; a token realm must be on the registry or another listed host. Empty: no OCI skills. |
 | serviceToken.secretName | string | `""` | Existing Secret in the release namespace with a bearer the REST API admits as the platform's own caller, no person, for agent-manager's `migrate`; no readability check applies to it. Needs `oauth.enabled`. Empty: none. |
 | serviceToken.key | string | `"token"` | Key of the token in that Secret. |
 | mcp.path | string | `"/mcp"` | MCP endpoint path. |

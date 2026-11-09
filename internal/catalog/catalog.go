@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 	"sync"
 
@@ -114,14 +113,41 @@ func (s *Service) List(ctx context.Context, source string, refresh bool) (*skill
 	}
 	out := &skills.Result{Repositories: make([]skills.Repository, 0, len(res.Repositories))}
 	for _, repo := range res.Repositories {
-		if repo.Private && !identity.IsService(ctx) {
-			if err := s.pinner.RequireReadable(ctx, repo.RepoURL, gitHubLogin(ctx)); err != nil {
-				repo = skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: true, Skills: []skills.Skill{}, Error: err.Error(), FetchedAt: repo.FetchedAt}
-			}
-		}
-		out.Repositories = append(out.Repositories, repo)
+		out.Repositories = append(out.Repositories, s.visible(ctx, repo))
 	}
 	return out, nil
+}
+
+// visible is repo as the caller may see it. A private repository, and one
+// whose read failed (its visibility may be unknown), is checked against the
+// caller; refused, only its URL and why are left. For a repository the caller
+// named, not a configured one, a missing and an unreadable repository get
+// the same answer: the listing does not tell which private repositories
+// exist.
+func (s *Service) visible(ctx context.Context, repo skills.Repository) skills.Repository {
+	if identity.IsService(ctx) || (!repo.Private && repo.Error == "") {
+		return repo
+	}
+	err := s.pinner.RequireReadable(ctx, repo.RepoURL, gitHubLogin(ctx))
+	if err == nil || (!repo.Private && !errors.Is(err, skills.ErrNotReadable) && !errors.Is(err, ErrNotFound)) {
+		// Readable, or public with its own error to show.
+		return repo
+	}
+	msg := err.Error()
+	if !s.configured(repo.RepoURL) {
+		msg = repo.RepoURL + " does not exist or you cannot read it"
+	}
+	return skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: repo.Private, Skills: []skills.Skill{}, Error: msg, FetchedAt: repo.FetchedAt}
+}
+
+// configured reports whether repoURL is a configured source's repository.
+func (s *Service) configured(repoURL string) bool {
+	for _, src := range s.skills.Sources() {
+		if skills.SameRepository(src.URL, repoURL) {
+			return true
+		}
+	}
+	return false
 }
 
 // Request is what Resolve pins: skills and plugins, each a git or an OCI
@@ -243,29 +269,22 @@ func validate(it Item, skill bool) (Item, error) {
 	if skill && it.ClaudeFormat != nil {
 		return it, errors.New("claudeFormat is for plugins")
 	}
-	raw := strings.TrimSpace(it.Path)
-	if strings.HasPrefix(raw, "/") {
-		return it, fmt.Errorf("path %q must be relative to the repository root", it.Path)
+	cleaned, err := skills.CleanPath(it.Path)
+	if err != nil {
+		return it, err
 	}
-	for _, seg := range strings.Split(raw, "/") {
-		if seg == ".." {
-			return it, fmt.Errorf("path %q must not climb out of the repository", it.Path)
-		}
-	}
-	if it.Path = path.Clean(raw); it.Path == "." {
-		it.Path = ""
-	}
+	it.Path = cleaned
 	return it, nil
 }
 
 // resolution is one Resolve: each repository ref, readability and path is
-// looked up once, however many items share it.
+// looked up once, however many items share it. Its items are pinned one
+// after another.
 type resolution struct {
 	svc     *Service
 	login   string
 	service bool
 
-	mu       sync.Mutex
 	heads    map[string]string
 	readable map[string]error
 	paths    map[string]bool
@@ -289,13 +308,11 @@ func (r *resolution) pin(ctx context.Context, list string, items []Item) ([]Item
 func (r *resolution) item(ctx context.Context, it Item, plugin bool) (Item, error) {
 	out := Item{Name: it.Name, Path: it.Path, Skills: it.Skills}
 	if it.OCI != nil {
-		ref := it.OCI.Ref
-		if !skills.DigestRefPattern.MatchString(ref) {
-			pinned, err := r.svc.pinner.OCIDigest(ctx, ref)
-			if err != nil {
-				return Item{}, classify(err)
-			}
-			ref = pinned
+		// A digest is kept, but only an allowed registry's, and in the
+		// pinned form a tag is.
+		ref, err := r.svc.pinner.OCIDigest(ctx, it.OCI.Ref)
+		if err != nil {
+			return Item{}, classify(err)
 		}
 		out.OCI = &OCI{Ref: ref}
 		return out, nil
@@ -342,26 +359,20 @@ func (r *resolution) requireReadable(ctx context.Context, url string) error {
 	if r.service {
 		return nil
 	}
-	r.mu.Lock()
 	err, seen := r.readable[url]
-	r.mu.Unlock()
 	if !seen {
 		err = r.svc.pinner.RequireReadable(ctx, url, r.login)
 		if err != nil {
 			err = classify(err)
 		}
-		r.mu.Lock()
 		r.readable[url] = err
-		r.mu.Unlock()
 	}
 	return err
 }
 
 func (r *resolution) head(ctx context.Context, url, ref string) (string, error) {
 	key := url + "@" + ref
-	r.mu.Lock()
 	head, ok := r.heads[key]
-	r.mu.Unlock()
 	if ok {
 		return head, nil
 	}
@@ -369,9 +380,7 @@ func (r *resolution) head(ctx context.Context, url, ref string) (string, error) 
 	if err != nil {
 		return "", classify(err)
 	}
-	r.mu.Lock()
 	r.heads[key] = head
-	r.mu.Unlock()
 	return head, nil
 }
 
@@ -381,17 +390,13 @@ func (r *resolution) requirePath(ctx context.Context, url, commit, path string) 
 		return nil
 	}
 	key := url + "@" + commit + ":" + path
-	r.mu.Lock()
 	exists, ok := r.paths[key]
-	r.mu.Unlock()
 	if !ok {
 		var err error
 		if exists, err = r.svc.pinner.PathExists(ctx, url, commit, path); err != nil {
 			return classify(err)
 		}
-		r.mu.Lock()
 		r.paths[key] = exists
-		r.mu.Unlock()
 	}
 	if !exists {
 		return fmt.Errorf("%w: path %q does not exist in %s at %s", ErrNotFound, path, url, commit)

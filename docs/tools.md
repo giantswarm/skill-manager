@@ -29,7 +29,7 @@ Per source: url, ref (empty: the default branch), path scanned, readOnly, commit
 ```text
 List the skills of the configured skill sources, with each source's commit.
 
-Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads GitHub.
+Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds.
 ```
 
 ```json

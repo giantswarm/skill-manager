@@ -89,10 +89,29 @@ func (g *github) permission(ctx context.Context, owner, repo, login string) (str
 	return out.Permission, nil
 }
 
+// head resolves ref to the commit it points at right now: empty is the
+// default branch (read from meta, else from the repository), a branch or a
+// tag its head, a commit id itself, once GitHub confirms it exists. The one
+// place a ref becomes a commit.
+func (g *github) head(ctx context.Context, owner, repo, ref string, meta *repoMeta) (string, error) {
+	if ref == "" {
+		if meta == nil {
+			m, err := g.repository(ctx, owner, repo)
+			if err != nil {
+				return "", err
+			}
+			meta = &m
+		}
+		ref = meta.DefaultBranch
+	}
+	return g.headCommit(ctx, owner, repo, ref)
+}
+
 // headCommit resolves a ref (branch, tag or commit) to the commit it points
-// at right now: the sha media type answers the id alone, not the commit.
+// at right now: the sha media type answers the id alone, not the commit. A
+// commit id GitHub does not have is its 404 or 422.
 func (g *github) headCommit(ctx context.Context, owner, repo, ref string) (string, error) {
-	body, err := g.get(ctx, fmt.Sprintf("%s/repos/%s/%s/commits/%s", g.apiURL, owner, repo, url.PathEscape(ref)), "application/vnd.github.sha")
+	body, err := g.get(ctx, fmt.Sprintf("%s/repos/%s/%s/commits/%s", g.apiURL, owner, repo, escapeSegments(ref)), "application/vnd.github.sha")
 	if err != nil {
 		return "", err
 	}
@@ -118,11 +137,17 @@ func (g *github) exists(ctx context.Context, owner, repo, path, ref string) (boo
 }
 
 func (g *github) contentsURL(owner, repo, path, ref string) string {
-	segments := strings.Split(path, "/")
+	return fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s", g.apiURL, owner, repo, escapeSegments(path), url.QueryEscape(ref))
+}
+
+// escapeSegments escapes each segment of a slash-separated path or ref:
+// GitHub reads release/v1 in a path, not release%2Fv1.
+func escapeSegments(p string) string {
+	segments := strings.Split(p, "/")
 	for i, s := range segments {
 		segments[i] = url.PathEscape(s)
 	}
-	return fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s", g.apiURL, owner, repo, strings.Join(segments, "/"), url.QueryEscape(ref))
+	return strings.Join(segments, "/")
 }
 
 func (g *github) getJSON(ctx context.Context, target string, out any) error {
@@ -186,12 +211,16 @@ func (g *github) do(ctx context.Context, method, target, accept string) ([]byte,
 	return body, nil
 }
 
+// maxErrorBody bounds what of an upstream answer reaches an error.
+const maxErrorBody = 200
+
+// firstLine is s's first line, at most maxErrorBody bytes of it.
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+		s = s[:i]
 	}
-	if len(s) > 200 {
-		return s[:200]
+	if len(s) > maxErrorBody {
+		s = s[:maxErrorBody]
 	}
 	return s
 }

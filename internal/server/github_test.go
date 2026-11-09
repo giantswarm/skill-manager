@@ -45,7 +45,7 @@ func TestGitHubPinCarriesBothTokens(t *testing.T) {
 	idp := newFakeIdP(t)
 	gh, calls := fakeGitHub(t, "ghu_person", "jane")
 	cfg := idp.config()
-	cfg.GitHub = &GitHubPin{AuthorizationServer: "https://github.com/apps/giantswarm-agent-manager", APIURL: gh.URL}
+	cfg.GitHub = &GitHubPin{AuthorizationServer: "https://github.com/apps/giantswarm-agent-manager", APIURL: gh.URL, MusterServer: "skills"}
 	o, err := newOAuth(cfg, "/mcp", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	t.Cleanup(func() { o.shutdown(context.Background()) })
@@ -87,13 +87,21 @@ func TestGitHubPinCarriesBothTokens(t *testing.T) {
 
 	rec = call("ghu_revoked", forwarded)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Body.String(), "core_auth_login server=skill-manager")
+	assert.Contains(t, rec.Body.String(), "core_auth_login server=skills", "the MCPServer's name in muster")
 
 	rec = call("", forwarded)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 
 	assert.Equal(t, http.StatusUnauthorized, call("ghu_person", idp.idToken(t, []string{"someone-else"}, time.Now().Add(30*time.Minute))).Code, "the ID token is validated as without the pin")
 
+	// A REST caller forwards the GitHub token itself: no muster sign-in.
+	req := httptest.NewRequest(http.MethodGet, "/v1/sources", nil)
+	req.Header.Set("Authorization", "Bearer ghu_revoked")
+	req.Header.Set(ForwardedIdentityHeader, forwarded)
+	rec = httptest.NewRecorder()
+	o.protectREST(http.NotFoundHandler()).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "core_auth_login")
 }
 
 // TestRESTTakesThePinnedPairOrTheIDToken: agent-manager forwards the person's

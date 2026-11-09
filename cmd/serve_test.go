@@ -113,6 +113,15 @@ func TestServeRefusesUnparsableEnvironment(t *testing.T) {
 	assert.ErrorContains(t, envErr, "SKILL_MANAGER_CACHE_TTL")
 }
 
+// A flag wins over an unparsable environment value of its own.
+func TestServeFlagWinsOverAnUnparsableEnvironment(t *testing.T) {
+	t.Setenv("SKILL_MANAGER_CACHE_TTL", "5")
+	cmd, o := newServe()
+	require.NoError(t, cmd.Flags().Parse([]string{"--cache-ttl=5m"}))
+	require.NoError(t, o.envErr())
+	assert.Equal(t, 5*time.Minute, o.cacheTTL)
+}
+
 // The service token is trimmed: a Secret written with a trailing newline
 // still matches.
 func TestServeTrimsTheServiceToken(t *testing.T) {

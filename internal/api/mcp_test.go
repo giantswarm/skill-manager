@@ -83,3 +83,12 @@ func TestMCPListsSourcesAndSkills(t *testing.T) {
 	require.Len(t, res.Repositories, 1)
 	assert.Equal(t, "overview", res.Repositories[0].Skills[0].Name)
 }
+
+// resolve_skills refuses an unknown field as POST /v1/resolve does.
+func TestMCPResolveSkillsRefusesUnknownFields(t *testing.T) {
+	text, isErr := callTool(t, newCatalog(), ToolResolveSkills, map[string]any{
+		"skills": []any{map[string]any{"name": "x", "url": catalogtest.SkillsRepo}},
+	})
+	assert.True(t, isErr)
+	assert.Contains(t, text, `unknown field "url"`)
+}

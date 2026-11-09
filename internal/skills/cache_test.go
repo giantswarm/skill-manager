@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,4 +171,97 @@ func TestResolverReusesRepositoryMetadata(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, n)
+}
+
+// A commit-shaped ref is a commit GitHub must have; a ref with a slash
+// reaches GitHub with its slash.
+func TestRefsAreAskedAsGiven(t *testing.T) {
+	var paths []string
+	var mu sync.Mutex
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.EscapedPath())
+		mu.Unlock()
+		switch r.URL.EscapedPath() {
+		case "/repos/o/r/commits/release/v1", "/repos/o/r/commits/" + headCommit:
+			_, _ = w.Write([]byte(headCommit))
+		default:
+			http.Error(w, `{"message":"No commit found"}`, http.StatusUnprocessableEntity)
+		}
+	}))
+	t.Cleanup(gh.Close)
+	r := NewResolver(gh.URL, nil, nil, nil)
+	sha, err := r.GitHead(t.Context(), "https://github.com/o/r", "release/v1")
+	require.NoError(t, err)
+	assert.Equal(t, headCommit, sha)
+	sha, err = r.GitHead(t.Context(), "https://github.com/o/r", headCommit)
+	require.NoError(t, err)
+	assert.Equal(t, headCommit, sha)
+	_, err = r.GitHead(t.Context(), "https://github.com/o/r", featureCommit)
+	assert.ErrorIs(t, err, ErrNotFound, "a commit id GitHub does not have")
+	assert.Contains(t, paths, "/repos/o/r/commits/release/v1")
+}
+
+// Repeated refreshes within minRefresh are served from the cache.
+func TestRefreshIsThrottled(t *testing.T) {
+	defer func(prev time.Duration) { minRefresh = prev }(minRefresh)
+	minRefresh = time.Hour
+	gh, hits := wrapGitHub(t)
+	d := New(Config{Repositories: []Source{{URL: agentSkills}}, APIURL: gh.URL, Tokens: StaticToken("secret"), CacheTTL: time.Minute}, nil)
+	_, err := d.List(t.Context(), "", "", false)
+	require.NoError(t, err)
+	before := *hits
+	_, err = d.List(t.Context(), "", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, before, *hits)
+}
+
+// Repositories callers name cannot evict the configured sources' listings.
+func TestNamedRepositoriesDoNotEvictTheConfiguredSources(t *testing.T) {
+	gh, hits := wrapGitHub(t)
+	d := New(Config{Repositories: []Source{{URL: agentSkills}}, APIURL: gh.URL, Tokens: StaticToken("secret"), CacheTTL: time.Minute}, nil)
+	_, err := d.List(t.Context(), "", "", false)
+	require.NoError(t, err)
+	for i := range cacheMax + 1 {
+		_, err := d.List(t.Context(), fmt.Sprintf("https://github.com/giantswarm/gone-%d", i), "", false)
+		require.NoError(t, err)
+	}
+	before := *hits
+	_, err = d.List(t.Context(), "", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, before, *hits, "still cached")
+}
+
+// A read that fails after the visibility is known keeps it: a private
+// repository's error is withheld from those who cannot read it.
+func TestAFailedReadKeepsTheVisibility(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/o/secret" {
+			_, _ = w.Write([]byte(`{"default_branch":"main","private":true}`))
+			return
+		}
+		http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(gh.Close)
+	d := New(Config{Repositories: []Source{{URL: "https://github.com/o/secret"}}, APIURL: gh.URL}, nil)
+	res, err := d.List(t.Context(), "", "", false)
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.Repositories[0].Error)
+	assert.True(t, res.Repositories[0].Private)
+}
+
+// Head is cached per repository and ref, its failure for the error TTL.
+func TestHeadIsCachedPerRepositoryAndRef(t *testing.T) {
+	gh, hits := wrapGitHub(t)
+	d := New(Config{APIURL: gh.URL, Tokens: StaticToken("secret"), CacheTTL: time.Minute, ErrorTTL: time.Minute}, nil)
+	for _, p := range []string{"", "a", "b"} {
+		_, err := d.Head(t.Context(), Source{URL: agentSkills, Path: p})
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 2, *hits, "one repository and one commit lookup")
+	for range 2 {
+		_, err := d.Head(t.Context(), Source{URL: agentSkills, Ref: "nope"})
+		require.Error(t, err)
+	}
+	assert.Equal(t, 4, *hits, "a failure is not asked again within the error TTL")
 }

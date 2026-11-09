@@ -13,14 +13,9 @@ import (
 	"github.com/giantswarm/skill-manager/internal/oci"
 )
 
-// Immutable skill sources as the api.kagent.dev/v1alpha3 template requires
-// them: a full git commit id, an OCI reference by digest.
-var (
-	// CommitPattern is a full commit id (40 or 64 hex characters).
-	CommitPattern = regexp.MustCompile(`^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
-	// DigestRefPattern is <repository>@sha256:<digest>.
-	DigestRefPattern = regexp.MustCompile(`^[^\s@]+@sha256:[0-9a-f]{64}$`)
-)
+// CommitPattern is a full commit id (40 or 64 hex characters), the
+// immutable git source the api.kagent.dev/v1alpha3 template requires.
+var CommitPattern = regexp.MustCompile(`^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 
 // ErrUnresolvable marks a reference that could not be resolved to a pin; the
 // message names the repository or image and the reason.
@@ -155,25 +150,23 @@ func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login str
 }
 
 // GitHead resolves ref (a branch, tag or commit; empty for the default
-// branch) of repoURL to the commit it points at. A ref that is already a full
-// commit id is returned as it is without a lookup. A repository that cannot be
-// read — private without a token, or missing — is ErrUnresolvable naming it.
+// branch) of repoURL to the commit it points at. A commit id is checked to
+// exist. A repository that cannot be read — private without a token, or
+// missing — is ErrUnresolvable naming it.
 func (r *Resolver) GitHead(ctx context.Context, repoURL, ref string) (string, error) {
-	if CommitPattern.MatchString(ref) {
-		return ref, nil
-	}
 	owner, repo, err := parseRepoURL(repoURL)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrUnresolvable, err)
 	}
+	var meta *repoMeta
 	if ref == "" {
-		meta, err := r.repository(ctx, owner, repo)
+		m, err := r.repository(ctx, owner, repo)
 		if err != nil {
 			return "", r.unresolvable(ctx, repoURL, "its default branch", err)
 		}
-		ref = meta.DefaultBranch
+		meta, ref = &m, m.DefaultBranch
 	}
-	sha, err := r.gh.headCommit(ctx, owner, repo, ref)
+	sha, err := r.gh.head(ctx, owner, repo, ref, meta)
 	if err != nil {
 		return "", r.unresolvable(ctx, repoURL, "ref "+ref, err)
 	}
@@ -270,6 +263,10 @@ func (r *Resolver) OCIDigest(ctx context.Context, ref string) (string, error) {
 		return "", fmt.Errorf("%w: %v", ErrUnresolvable, err)
 	}
 	if img.Digest != "" {
+		// Already pinned: nothing to ask, but only an allowed registry's.
+		if err := r.registry.Allowed(img.Host); err != nil {
+			return "", fmt.Errorf("%w: %w: OCI skill %s: %v", ErrUnresolvable, ErrNotAllowed, ref, err)
+		}
 		return img.Pinned(), nil
 	}
 	tag := img.Tag

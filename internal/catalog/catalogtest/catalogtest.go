@@ -18,6 +18,7 @@ import (
 const (
 	SkillsRepo  = "https://github.com/giantswarm/agent-skills"
 	PrivateRepo = "https://github.com/giantswarm/private-skills"
+	MissingRepo = "https://github.com/giantswarm/missing"
 	MainHead    = "0123456789abcdef0123456789abcdef01234567"
 	FeatureHead = "89abcdef0123456789abcdef0123456789abcdef"
 	TagHead     = "fedcba9876543210fedcba9876543210fedcba98"
@@ -59,8 +60,12 @@ func (p *Pinner) GitHead(_ context.Context, repoURL, ref string) (string, error)
 
 func (p *Pinner) OCIDigest(_ context.Context, ref string) (string, error) {
 	p.record("oci " + ref)
-	if ref == "ghcr.io/giantswarm/skills/kubectl:1.4.0" {
+	switch ref {
+	case "ghcr.io/giantswarm/skills/kubectl:1.4.0", "ghcr.io/giantswarm/skills/kubectl@" + Digest:
 		return "ghcr.io/giantswarm/skills/kubectl@" + Digest, nil
+	}
+	if strings.Contains(ref, "@sha256:") {
+		return "", fmt.Errorf("%w: %w: OCI skill %s: registry host not allowed", skills.ErrUnresolvable, skills.ErrNotAllowed, ref)
 	}
 	return "", fmt.Errorf("%w: %w: OCI skill %s", skills.ErrUnresolvable, skills.ErrNotFound, ref)
 }
@@ -69,6 +74,9 @@ func (p *Pinner) RequireReadable(_ context.Context, repoURL, login string) error
 	p.record("readable " + repoURL + " " + login)
 	if repoURL == PrivateRepo && login != "alice" {
 		return fmt.Errorf("%w: %s is private and %q cannot read it", skills.ErrNotReadable, repoURL, login)
+	}
+	if repoURL == MissingRepo {
+		return fmt.Errorf("%w: %w: %s: GitHub answered 404", skills.ErrUnresolvable, skills.ErrNotFound, repoURL)
 	}
 	return nil
 }
@@ -100,6 +108,8 @@ func (p *Pinner) GitCalls() []string {
 // configured sources, their commit is the head, their error the head's.
 type Lister struct {
 	Repos []skills.Repository
+	// Configured, when not nil, are the configured sources; else Repos are.
+	Configured []skills.Source
 	// Observe, when set, sees every List's repository and refresh.
 	Observe func(repository string, refresh bool)
 }
@@ -129,6 +139,9 @@ func (l Lister) SourceRef(string, string) string { return "" }
 
 // Sources are the listing's repositories.
 func (l Lister) Sources() []skills.Source {
+	if l.Configured != nil {
+		return l.Configured
+	}
 	out := make([]skills.Source, 0, len(l.Repos))
 	for _, r := range l.Repos {
 		out = append(out, skills.Source{URL: r.RepoURL, Ref: r.Ref, Path: r.Path, ReadOnly: r.ReadOnly})

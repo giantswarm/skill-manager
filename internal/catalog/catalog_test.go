@@ -119,6 +119,33 @@ func TestResolveRefusals(t *testing.T) {
 	}
 }
 
+// A private repository whose read failed is withheld too, and a repository a
+// caller names answers the same whether it is private or missing.
+func TestListWithholdsFailedPrivateReadsAndHidesWhichRepositoriesExist(t *testing.T) {
+	repos := []skills.Repository{
+		{RepoURL: catalogtest.PrivateRepo, Private: true, Skills: []skills.Skill{}, Error: `path "x" does not exist at commit ` + catalogtest.MainHead},
+		{RepoURL: catalogtest.MissingRepo, Skills: []skills.Skill{}, Error: "GitHub answered 404"},
+	}
+	configured := New(catalogtest.Lister{Repos: repos}, &catalogtest.Pinner{})
+	res, err := configured.List(t.Context(), "", false)
+	require.NoError(t, err)
+	assert.NotContains(t, res.Repositories[0].Error, catalogtest.MainHead)
+	assert.Contains(t, res.Repositories[0].Error, "cannot read it")
+
+	named := New(catalogtest.Lister{Repos: repos, Configured: []skills.Source{}}, &catalogtest.Pinner{})
+	res, err = named.List(t.Context(), "", false)
+	require.NoError(t, err)
+	assert.Equal(t, catalogtest.PrivateRepo+" does not exist or you cannot read it", res.Repositories[0].Error)
+	assert.Equal(t, catalogtest.MissingRepo+" does not exist or you cannot read it", res.Repositories[1].Error)
+}
+
+// A digest is pinned only for an allowed registry, in the pinned form.
+func TestResolveChecksADigestsRegistry(t *testing.T) {
+	svc, _ := newService()
+	_, err := svc.Resolve(t.Context(), Request{Skills: []Item{{Name: "e", OCI: &OCI{Ref: "evil.example.com/x:1@" + catalogtest.Digest}}}})
+	assert.ErrorIs(t, err, ErrInvalid)
+}
+
 // A private repository is pinned for a person who can read it.
 func TestResolvePinsAPrivateRepositoryForItsReader(t *testing.T) {
 	svc, _ := newService()

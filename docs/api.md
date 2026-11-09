@@ -21,7 +21,7 @@ Anything else is `401`. The ID token is validated before GitHub is asked about a
 | `POST /v1/resolve` | the request's items pinned |
 | `GET /healthz`, `GET /readyz` | `ok` |
 
-`GET /v1/skills`: `source` is any github.com repository (a configured one keeps its ref and path). A repository that cannot be read is still `200`, with `error` on that repository; with a good listing before, `stale: true` and that listing. A failed read is retried after 30 seconds.
+`GET /v1/skills`: `source` is any github.com repository (a configured one keeps its ref and path); one that does not exist and one you cannot read get the same `error`. A repository that cannot be read is still `200`, with `error` on that repository; with a good listing before, `stale: true` and that listing. A failed read is retried after 30 seconds; `refresh` re-reads a listing older than 10 seconds.
 
 ## `POST /v1/resolve`
 
@@ -32,11 +32,11 @@ Anything else is `401`. The ID token is validated before GitHub is asked about a
 ```
 
 - A git item is pinned to its ref's commit: `git.commit` set, `git.ref` dropped. No ref: the ref of the configured source whose `path` holds the item's `path`, else the default branch. A `commit` instead of a ref is kept.
-- An OCI item is pinned to `oci.ref` `<repository>@sha256:<digest>`.
+- An OCI item is pinned to `oci.ref` `<repository>@sha256:<digest>`; a given digest is kept, its tag dropped.
 - The person-can-read check runs inside: every git repository must be readable by the caller (public, or the GitHub login has read access). No separate check is needed.
 - `path` is cleaned (`./a//b/` is `a/b`, `.` is the root) and returned cleaned; an absolute path or one with `..` is refused.
-- The item's `path` must exist at the commit; a given `commit` with no path must exist.
-- An OCI item must come from an allowed registry (`oci.registries`).
+- The item's `path` must exist at the commit; a commit, given or as the ref, must exist.
+- An OCI item must come from an allowed registry (`oci.registries`), also one given by digest.
 - The first refused item fails the whole call.
 - A git plugin is answered with `claudeFormat` (a `.claude-plugin/plugin.json` and no root `plugin.json`); `claudeFormat: true` in the request refuses one that is not.
 
@@ -56,4 +56,5 @@ Intended, stricter than agent-manager before:
 
 - The read check applies to every git item, also on `refreshSkills`.
 - The path of every git item must exist at its commit; a given commit must exist.
+- An OCI digest must come from an allowed registry.
 - A git plugin's format is checked on every resolve (`claudeFormat`).

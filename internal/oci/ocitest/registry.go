@@ -28,6 +28,9 @@ type Registry struct {
 	Realm string
 	// FailBody, when set, is the body of a 500 every manifest request gets.
 	FailBody string
+	// Manifest, when set, is every tag's manifest body, answered without a
+	// Docker-Content-Digest.
+	Manifest []byte
 	// TokenHits counts token-endpoint calls (bearer caching).
 	TokenHits atomic.Int32
 
@@ -84,6 +87,10 @@ func (f *Registry) handler() http.Handler {
 		}
 		tag := strings.TrimPrefix(r.URL.Path, "/v2/"+f.Repo+"/manifests/")
 		for _, t := range f.Tags {
+			if t == tag && f.Manifest != nil {
+				_, _ = w.Write(f.Manifest)
+				return
+			}
 			if t == tag {
 				w.Header().Set("Docker-Content-Digest", Digest(tag))
 				w.WriteHeader(http.StatusOK)

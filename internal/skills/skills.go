@@ -101,7 +101,10 @@ type Discoverer struct {
 	gh  *github
 	log *slog.Logger
 
+	// cache holds the listings of repositories a caller names; own those of
+	// the configured sources, which no caller can evict.
 	cache *lru.Cache[string, cacheEntry]
+	own   *lru.Cache[string, cacheEntry]
 	heads *lru.Cache[string, headEntry]
 	reads singleflight.Group
 }
@@ -130,6 +133,7 @@ type Head struct {
 
 type headEntry struct {
 	head    Head
+	err     error
 	expires time.Time
 }
 
@@ -145,8 +149,26 @@ func New(cfg Config, log *slog.Logger) *Discoverer {
 		log = slog.Default()
 	}
 	return &Discoverer{cfg: cfg, gh: newGitHub(cfg.APIURL, cfg.Tokens, cfg.HTTPClient), log: log,
-		cache: lru.New[string, cacheEntry](cacheMax), heads: lru.New[string, headEntry](cacheMax)}
+		cache: lru.New[string, cacheEntry](cacheMax), own: lru.New[string, cacheEntry](len(cfg.Repositories)),
+		heads: lru.New[string, headEntry](cacheMax)}
 }
+
+// cacheFor is the cache of src's listing: the configured sources' own, or
+// the one of the repositories callers name.
+func (d *Discoverer) cacheFor(src Source) *lru.Cache[string, cacheEntry] {
+	key := cacheKey(src)
+	for _, c := range d.cfg.Repositories {
+		if cacheKey(c) == key {
+			return d.own
+		}
+	}
+	return d.cache
+}
+
+// minRefresh is how old a listing must be before refresh reads it again:
+// repeated refreshes cannot spend the GitHub rate limit. A variable for the
+// tests.
+var minRefresh = 10 * time.Second
 
 // cacheKey is a source's key: its canonical repository URL, ref and path.
 func cacheKey(src Source) string {
@@ -154,39 +176,42 @@ func cacheKey(src Source) string {
 }
 
 // Head resolves src's ref (empty: the default branch) to its commit, with
-// the repository's visibility, without reading its skills; cached for the
-// cache TTL.
+// the repository's visibility, without reading its skills. The answer
+// depends on the repository and ref only and is cached for the cache TTL, a
+// failure for the error TTL.
 func (d *Discoverer) Head(ctx context.Context, src Source) (Head, error) {
-	key := cacheKey(src)
+	key := canonicalOrRaw(src.URL) + "@" + src.Ref
 	if e, ok := d.heads.Get(key); ok && time.Now().Before(e.expires) {
-		return e.head, nil
+		return e.head, e.err
 	}
 	v, err, _ := d.reads.Do("head "+key, func() (any, error) {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
 		defer cancel()
-		owner, name, err := parseRepoURL(src.URL)
+		h, err := d.readHead(ctx, src)
+		ttl := d.cfg.CacheTTL
 		if err != nil {
-			return Head{}, err
+			ttl = d.cfg.ErrorTTL
 		}
-		meta, err := d.gh.repository(ctx, owner, name)
-		if err != nil {
-			return Head{}, err
-		}
-		ref := src.Ref
-		if ref == "" {
-			ref = meta.DefaultBranch
-		}
-		commit := ref
-		if !CommitPattern.MatchString(ref) {
-			if commit, err = d.gh.headCommit(ctx, owner, name, ref); err != nil {
-				return Head{}, err
-			}
-		}
-		h := Head{Commit: commit, Private: meta.Private}
-		d.heads.Add(key, headEntry{head: h, expires: time.Now().Add(d.cfg.CacheTTL)})
-		return h, nil
+		d.heads.Add(key, headEntry{head: h, err: err, expires: time.Now().Add(ttl)})
+		return h, err
 	})
 	return v.(Head), err
+}
+
+func (d *Discoverer) readHead(ctx context.Context, src Source) (Head, error) {
+	owner, name, err := parseRepoURL(src.URL)
+	if err != nil {
+		return Head{}, err
+	}
+	meta, err := d.gh.repository(ctx, owner, name)
+	if err != nil {
+		return Head{}, err
+	}
+	commit, err := d.gh.head(ctx, owner, name, src.Ref, &meta)
+	if err != nil {
+		return Head{}, err
+	}
+	return Head{Commit: commit, Private: meta.Private}, nil
 }
 
 // Sources returns the configured repositories.
@@ -256,9 +281,12 @@ func (d *Discoverer) List(ctx context.Context, repository, ref string, refresh b
 
 func (d *Discoverer) discover(ctx context.Context, src Source, refresh bool) Repository {
 	key := cacheKey(src)
-	cached, ok := d.cache.Get(key)
-	if ok && !refresh && time.Now().Before(cached.expires) {
-		return cached.repo
+	cached, ok := d.cacheFor(src).Get(key)
+	if ok && time.Now().Before(cached.expires) {
+		recent := cached.repo.FetchedAt != nil && time.Since(*cached.repo.FetchedAt) < minRefresh
+		if !refresh || recent {
+			return cached.repo
+		}
 	}
 	// One read per source at a time: concurrent callers share it.
 	v, _, _ := d.reads.Do("read "+key, func() (any, error) {
@@ -283,20 +311,21 @@ func (d *Discoverer) reread(ctx context.Context, key string, src Source, cached 
 			now := time.Now()
 			repo := cached.repo
 			repo.FetchedAt = &now
-			d.cache.Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.CacheTTL), good: &repo})
+			d.cacheFor(src).Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.CacheTTL), good: &repo})
 			return repo
 		}
 	}
 
 	repo, err := d.read(readCtx, src)
+	failed := repo
 	now := time.Now()
 	if err == nil {
 		repo.FetchedAt = &now
-		d.cache.Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.CacheTTL), good: &repo})
+		d.cacheFor(src).Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.CacheTTL), good: &repo})
 		return repo
 	}
 	d.log.Warn("skill discovery failed", "repository", repoURL, "error", err)
-	if prev, ok := d.cache.Get(key); ok && prev.good != nil {
+	if prev, ok := d.cacheFor(src).Get(key); ok && prev.good != nil {
 		cached = prev
 	}
 	if cached.good != nil {
@@ -305,8 +334,9 @@ func (d *Discoverer) reread(ctx context.Context, key string, src Source, cached 
 	} else {
 		repo = Repository{RepoURL: repoURL, Ref: ref, Path: src.Path, ReadOnly: src.ReadOnly, Skills: []Skill{}, FetchedAt: &now}
 	}
+	repo.Private = repo.Private || failed.Private
 	repo.Error = err.Error()
-	d.cache.Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.ErrorTTL), good: cached.good})
+	d.cacheFor(src).Add(key, cacheEntry{repo: repo, expires: now.Add(d.cfg.ErrorTTL), good: cached.good})
 	return repo
 }
 
@@ -321,22 +351,11 @@ const (
 
 // headOf resolves ref (the default branch when empty) to its head commit.
 func (d *Discoverer) headOf(ctx context.Context, repoURL, ref string) (string, error) {
-	if CommitPattern.MatchString(ref) {
-		return ref, nil
-	}
 	owner, name, err := parseRepoURL(repoURL)
 	if err != nil {
 		return "", err
 	}
-	branch := ref
-	if branch == "" {
-		meta, err := d.gh.repository(ctx, owner, name)
-		if err != nil {
-			return "", err
-		}
-		branch = meta.DefaultBranch
-	}
-	return d.gh.headCommit(ctx, owner, name, branch)
+	return d.gh.head(ctx, owner, name, ref, nil)
 }
 
 func isSkillFile(path string) bool {
@@ -369,19 +388,19 @@ func (d *Discoverer) read(ctx context.Context, src Source) (Repository, error) {
 	if branch == "" {
 		branch = meta.DefaultBranch
 	}
+	// From here on the visibility is known: a failed read still says
+	// whether the repository is private.
+	failed := Repository{Private: meta.Private}
 	// The commit the ref points at right now: what an agent pins. The tree
 	// and the files are read at that commit, not the branch, so the listing
 	// stays consistent even when the branch moves between the calls.
-	// A commit is its own head.
-	head := branch
-	if !CommitPattern.MatchString(head) {
-		if head, err = d.gh.headCommit(ctx, owner, name, branch); err != nil {
-			return Repository{}, err
-		}
+	head, err := d.gh.head(ctx, owner, name, branch, &meta)
+	if err != nil {
+		return failed, err
 	}
 	tree, err := d.tree(ctx, owner, name, head, src.Path)
 	if err != nil {
-		return Repository{}, err
+		return failed, err
 	}
 	repo := Repository{RepoURL: canonical, Ref: branch, Path: src.Path, ReadOnly: src.ReadOnly, Commit: head, Private: meta.Private, Skills: []Skill{}, Truncated: tree.Truncated}
 	if tree.Truncated {

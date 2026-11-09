@@ -1,6 +1,8 @@
 package oci_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -101,4 +103,29 @@ func TestRegistryDefaultClientRefusesPrivateAddresses(t *testing.T) {
 	_, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a public address")
+}
+
+// Without Docker-Content-Digest the manifest body is hashed; one larger than
+// the bound is refused, not hashed cut.
+func TestRegistryRefusesAnOversizedManifest(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	f.Manifest = []byte(`{"schemaVersion":2}`)
+	r := oci.NewRegistry([]string{f.Host()}, f.Client())
+	got, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:"+fmt.Sprintf("%x", sha256.Sum256(f.Manifest)), got)
+
+	f.Manifest = make([]byte, 4<<20+1)
+	_, err = r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	assert.ErrorContains(t, err, "larger than")
+}
+
+// An empty allowlist asks no registry.
+func TestRegistryWithAnEmptyAllowlistAsksNone(t *testing.T) {
+	r := oci.NewRegistry([]string{}, nil)
+	for _, h := range oci.DefaultHosts {
+		assert.ErrorIs(t, r.Allowed(h), oci.ErrHostNotAllowed)
+	}
+	assert.NoError(t, oci.NewRegistry(nil, nil).Allowed(oci.DefaultHosts[0]), "nil is the defaults")
 }

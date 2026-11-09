@@ -170,16 +170,17 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	log.Info("OAuth resource server enabled", "provider", cfg.provider(), "issuer", cfg.BaseURL,
 		"trustedAudiences", cfg.TrustedAudiences)
 	o := &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}
+	// The REST API's callers forward the person's GitHub token themselves:
+	// a refusal names no muster sign-in.
+	rest := GitHubPin{AuthorizationServer: "https://github.com", APIURL: cfg.GitHubAPIURL}
 	if cfg.GitHub != nil {
 		if o.github, err = newGitHubGuard(*cfg.GitHub, log); err != nil {
 			return nil, err
 		}
-		o.restGitHub = o.github
-	} else {
-		pin := GitHubPin{AuthorizationServer: "https://github.com", APIURL: cfg.GitHubAPIURL}
-		if o.restGitHub, err = newGitHubGuard(pin, log); err != nil {
-			return nil, err
-		}
+		rest.AuthorizationServer, rest.APIURL = cfg.GitHub.AuthorizationServer, cfg.GitHub.APIURL
+	}
+	if o.restGitHub, err = newGitHubGuard(rest, log); err != nil {
+		return nil, err
 	}
 	return o, nil
 }

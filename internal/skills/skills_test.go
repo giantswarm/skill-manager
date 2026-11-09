@@ -342,9 +342,14 @@ func TestResolverPinsOCITags(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotAllowed, "a registry not on the allowlist")
 
 	digest := "sha256:5b0bcabd1ed22e9fb1310cf6c2dec7cdef19f0ad69efa1f392e94a4333501270"
-	pinned, err = r.OCIDigest(ctx, "ghcr.io/giantswarm/skills/kubectl:1.4.0@"+digest)
+	ghcr := NewResolver("", nil, nil, oci.NewRegistry([]string{"ghcr.io"}, f.Client()))
+	pinned, err = ghcr.OCIDigest(ctx, "ghcr.io/giantswarm/skills/kubectl:1.4.0@"+digest)
 	require.NoError(t, err)
-	assert.Equal(t, "ghcr.io/giantswarm/skills/kubectl@"+digest, pinned, "a digest needs no registry call")
+	assert.Equal(t, "ghcr.io/giantswarm/skills/kubectl@"+digest, pinned, "a digest needs no registry call; the tag is dropped")
+	for _, off := range []string{"evil.example.com/x:1@" + digest, "10.0.0.5:5000/x@" + digest} {
+		_, err = ghcr.OCIDigest(ctx, off)
+		assert.ErrorIs(t, err, ErrNotAllowed, "a digest of a registry off the allowlist: %s", off)
+	}
 	_, err = r.OCIDigest(ctx, "kubectl:1.4.0")
 	assert.ErrorIs(t, err, ErrUnresolvable, "the registry host is required")
 }

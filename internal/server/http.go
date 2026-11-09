@@ -35,6 +35,7 @@ type Config struct {
 // Server is the assembled HTTP server.
 type Server struct {
 	http  *http.Server
+	mcp   *mcpserver.StreamableHTTPServer
 	oauth *oauthRuntime
 	log   *slog.Logger
 }
@@ -71,17 +72,23 @@ func New(cfg Config, rest *api.REST, mcpSrv *mcpserver.MCPServer, log *slog.Logg
 	}
 
 	// The REST API on its own mux so one guard covers every route; the
-	// health endpoints above and the OAuth metadata stay open.
+	// health endpoints above and the OAuth metadata stay open. Each route is
+	// also a pattern of the outer mux, which names the request's span; the
+	// prefix takes the rest (404, 405).
 	restMux := http.NewServeMux()
 	rest.Register(restMux)
-	mux.Handle(api.Prefix+"/", s.guard(restMux))
+	guarded := s.guard(restMux)
+	for _, p := range api.Patterns {
+		mux.Handle(p, guarded)
+	}
+	mux.Handle(api.Prefix+"/", guarded)
 
 	if mcpSrv != nil {
 		// mcp-go reads a POST body whole before validating it
 		// (CVE-2026-108859); the bound keeps that read to what the REST API
 		// accepts.
-		mcpHandler := mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))
-		mux.Handle(cfg.MCPPath, http.MaxBytesHandler(s.guardMCP(mcpHandler), maxMCPBodyBytes))
+		s.mcp = mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))
+		mux.Handle(cfg.MCPPath, http.MaxBytesHandler(s.guardMCP(s.mcp), maxMCPBodyBytes))
 	}
 	s.http = &http.Server{
 		Addr:              cfg.Addr,
@@ -156,11 +163,20 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	// The listener first: requests in flight finish with the OAuth store
+	// The MCP sessions first: an open listening stream never goes idle, and
+	// Shutdown would wait for it to the deadline.
+	if s.mcp != nil {
+		if err := s.mcp.Shutdown(shutdownCtx); err != nil {
+			s.log.Warn("closing MCP sessions", "error", err)
+		}
+	}
+	// Then the listener: requests in flight finish with the OAuth store
 	// they validate against still open.
 	err := s.http.Shutdown(shutdownCtx)
 	if s.oauth != nil {
-		s.oauth.shutdown(shutdownCtx)
+		oauthCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.oauth.shutdown(oauthCtx)
 	}
 	if err != nil {
 		return fmt.Errorf("shutdown: %w", err)

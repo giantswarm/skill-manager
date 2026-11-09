@@ -31,11 +31,14 @@ func NewREST(svc *catalog.Service, log *slog.Logger) *REST {
 	return &REST{svc: svc, log: log}
 }
 
-// Register mounts the routes on mux.
+// Patterns are the routes' ServeMux patterns.
+var Patterns = []string{"GET " + Prefix + "/sources", "GET " + Prefix + "/skills", "POST " + Prefix + "/resolve"}
+
+// Register mounts the routes on mux, in the order of Patterns.
 func (h *REST) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET "+Prefix+"/sources", h.sources)
-	mux.HandleFunc("GET "+Prefix+"/skills", h.skills)
-	mux.HandleFunc("POST "+Prefix+"/resolve", h.resolve)
+	for i, f := range []http.HandlerFunc{h.sources, h.skills, h.resolve} {
+		mux.HandleFunc(Patterns[i], f)
+	}
 }
 
 func (h *REST) sources(w http.ResponseWriter, r *http.Request) {

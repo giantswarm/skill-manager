@@ -67,7 +67,7 @@ cacheTTL: 5m
 oci:
   # -- The registries (host or host:port) an OCI skill or plugin may come
   # from. No other registry, and none by IP address, is asked; a token realm
-  # must be on the registry or another listed host.
+  # must be on the registry or another listed host. Empty: no OCI skills.
   registries:
     - gsoci.azurecr.io
     - gsociprivate.azurecr.io

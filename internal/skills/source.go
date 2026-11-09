@@ -56,24 +56,21 @@ func ParseSources(value string) ([]Source, error) {
 	for i, s := range out {
 		s.URL = strings.TrimSpace(s.URL)
 		s.Ref = strings.TrimSpace(s.Ref)
-		raw := strings.TrimSpace(s.Path)
 		switch {
-		case s.URL == "" && s.Ref == "" && raw == "":
+		case s.URL == "" && s.Ref == "" && strings.TrimSpace(s.Path) == "":
 			continue // an empty item of a comma-separated list
 		case s.URL == "":
 			return nil, fmt.Errorf("skill repository %d has no url", i)
 		case strings.ContainsAny(s.Ref, " \t\n"):
 			return nil, fmt.Errorf("skill repository %s: ref %q contains whitespace", s.URL, s.Ref)
-		case strings.HasPrefix(raw, "/"):
-			return nil, fmt.Errorf("skill repository %s: path %q must be relative to the repository root", s.URL, raw)
-		case climbs(raw):
-			return nil, fmt.Errorf("skill repository %s: path %q must not climb out of the repository", s.URL, raw)
 		}
-		if s.Path = path.Clean(raw); s.Path == "." {
-			s.Path = ""
+		cleaned, err := CleanPath(s.Path)
+		if err != nil {
+			return nil, fmt.Errorf("skill repository %s: %w", s.URL, err)
 		}
+		s.Path = cleaned
 		for _, prev := range kept {
-			if sameRepository(prev.URL, s.URL) && (within(s.Path, prev.Path) || within(prev.Path, s.Path) || s.Path == prev.Path) {
+			if SameRepository(prev.URL, s.URL) && (within(s.Path, prev.Path) || within(prev.Path, s.Path) || s.Path == prev.Path) {
 				return nil, fmt.Errorf("skill repository %s is configured twice with overlapping paths (%q and %q): give it once, or paths that do not contain each other", s.URL, prev.Path, s.Path)
 			}
 		}
@@ -85,8 +82,8 @@ func ParseSources(value string) ([]Source, error) {
 	return kept, nil
 }
 
-// sameRepository compares two repository URLs by their canonical form.
-func sameRepository(a, b string) bool {
+// SameRepository compares two repository URLs by their canonical form.
+func SameRepository(a, b string) bool {
 	return canonicalOrRaw(a) == canonicalOrRaw(b)
 }
 
@@ -97,11 +94,21 @@ func canonicalOrRaw(url string) string {
 	return strings.ToLower(strings.TrimRight(url, "/"))
 }
 
-func climbs(path string) bool {
-	for _, seg := range strings.Split(path, "/") {
+// CleanPath is a directory in a repository in its one form: relative,
+// cleaned (./a//b/ is a/b), "" for the root. An absolute path or one that
+// climbs out with .. is refused. Source paths and item paths both take it.
+func CleanPath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("path %q must be relative to the repository root", raw)
+	}
+	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
-			return true
+			return "", fmt.Errorf("path %q must not climb out of the repository", raw)
 		}
 	}
-	return false
+	if p = path.Clean(p); p == "." {
+		return "", nil
+	}
+	return p, nil
 }

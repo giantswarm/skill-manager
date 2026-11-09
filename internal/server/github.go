@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/giantswarm/skill-manager/internal/identity"
+	"github.com/giantswarm/skill-manager/internal/lru"
 )
 
 // GitHubPin makes the MCP endpoint the App-pinned registration muster
@@ -32,6 +32,10 @@ type GitHubPin struct {
 	// CacheTTL bounds how long a verified bearer is trusted without asking
 	// GitHub again (zero: DefaultGitHubCacheTTL).
 	CacheTTL time.Duration
+	// MusterServer is this server's MCPServer name in muster, which a
+	// refusal names for core_auth_login. Empty: the REST guard of a caller
+	// that forwards the person's GitHub token itself, named in no refusal.
+	MusterServer string
 }
 
 // ForwardedIdentityHeader is where muster puts the person's IdP ID token on
@@ -74,8 +78,7 @@ type gitHubGuard struct {
 	http *http.Client
 	log  *slog.Logger
 
-	mu    sync.Mutex
-	cache map[[sha256.Size]byte]gitHubEntry
+	cache *lru.Cache[[sha256.Size]byte, gitHubEntry]
 }
 
 type gitHubEntry struct {
@@ -91,12 +94,15 @@ func newGitHubGuard(pin GitHubPin, log *slog.Logger) (*gitHubGuard, error) {
 		pin.CacheTTL = DefaultGitHubCacheTTL
 	}
 	log.Info("GitHub bearer verification enabled", "authorizationServer", pin.AuthorizationServer, "api", pin.apiURL(), "cacheTTL", pin.CacheTTL)
-	return &gitHubGuard{pin: pin, http: &http.Client{Timeout: 10 * time.Second}, log: log, cache: map[[sha256.Size]byte]gitHubEntry{}}, nil
+	return &gitHubGuard{pin: pin, http: &http.Client{Timeout: 10 * time.Second}, log: log, cache: lru.New[[sha256.Size]byte, gitHubEntry](gitHubCacheMax)}, nil
 }
 
 // signIn is the one way to a bearer this registration accepts.
 func (g *gitHubGuard) signIn() string {
-	return "connect skill-manager in muster (core_auth_login server=skill-manager, the consent of " + g.pin.AuthorizationServer + "), then call again"
+	if g.pin.MusterServer == "" {
+		return "send the person's valid GitHub user token"
+	}
+	return "connect " + g.pin.MusterServer + " in muster (core_auth_login server=" + g.pin.MusterServer + ", the consent of " + g.pin.AuthorizationServer + "), then call again"
 }
 
 // githubTokenKey carries the GitHub bearer from swap to check.
@@ -156,10 +162,7 @@ func (g *gitHubGuard) check(next http.Handler) http.Handler {
 func (g *gitHubGuard) verify(ctx context.Context, token string) (string, int, error) {
 	key := sha256.Sum256([]byte(token))
 	now := time.Now()
-	g.mu.Lock()
-	e, ok := g.cache[key]
-	g.mu.Unlock()
-	if ok && now.Before(e.until) {
+	if e, ok := g.cache.Get(key); ok && now.Before(e.until) {
 		return e.login, 0, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pin.apiURL()+"/user", nil)
@@ -182,18 +185,7 @@ func (g *gitHubGuard) verify(ctx context.Context, token string) (string, int, er
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil || user.Login == "" {
 		return "", 0, fmt.Errorf("GET /user: no login in the answer")
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if len(g.cache) >= gitHubCacheMax {
-		for k, e := range g.cache {
-			if !now.Before(e.until) {
-				delete(g.cache, k)
-			}
-		}
-	}
-	if len(g.cache) < gitHubCacheMax {
-		g.cache[key] = gitHubEntry{login: user.Login, until: now.Add(g.pin.CacheTTL)}
-	}
+	g.cache.Add(key, gitHubEntry{login: user.Login, until: now.Add(g.pin.CacheTTL)})
 	return user.Login, 0, nil
 }
 

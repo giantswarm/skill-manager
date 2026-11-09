@@ -15,12 +15,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
+
+	"github.com/giantswarm/skill-manager/internal/lru"
 )
 
 // manifestAccept lists every manifest media type a HEAD may resolve: a skill
@@ -123,14 +125,17 @@ func (r Reference) baseURL() string {
 // maxTokens bounds the bearer cache.
 const maxTokens = 256
 
+// maxManifestBytes bounds a manifest hashed for its digest: the registries'
+// own manifest size limit.
+const maxManifestBytes = 4 << 20
+
 // Registry talks to the allowed OCI registries. It is safe for concurrent
 // use.
 type Registry struct {
 	http  *http.Client
 	hosts map[string]bool
 
-	mu     sync.Mutex
-	tokens map[string]token
+	tokens *lru.Cache[string, token]
 }
 
 type token struct {
@@ -139,9 +144,10 @@ type token struct {
 }
 
 // NewRegistry builds a client of the registries hosts (host or host:port;
-// empty: DefaultHosts). A nil client is one that dials public addresses only.
+// nil: DefaultHosts, empty: none). A nil client is one that dials public
+// addresses only.
 func NewRegistry(hosts []string, client *http.Client) *Registry {
-	if len(hosts) == 0 {
+	if hosts == nil {
 		hosts = DefaultHosts
 	}
 	allowed := map[string]bool{}
@@ -153,11 +159,11 @@ func NewRegistry(hosts []string, client *http.Client) *Registry {
 	if client == nil {
 		client = PublicClient(60 * time.Second)
 	}
-	return &Registry{http: client, hosts: allowed, tokens: map[string]token{}}
+	return &Registry{http: client, hosts: allowed, tokens: lru.New[string, token](maxTokens)}
 }
 
-// allowed refuses a host that is not on the allowlist or is an IP address.
-func (c *Registry) allowed(host string) error {
+// Allowed refuses a host that is not on the allowlist or is an IP address.
+func (c *Registry) Allowed(host string) error {
 	h := strings.ToLower(host)
 	name := h
 	if sh, _, err := net.SplitHostPort(h); err == nil {
@@ -181,8 +187,8 @@ func PublicClient(timeout time.Duration) *http.Client {
 		if err != nil {
 			return err
 		}
-		ip := net.ParseIP(host)
-		if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		ip, err := netip.ParseAddr(host)
+		if err != nil || !public(ip) {
 			return fmt.Errorf("%s is not a public address", host)
 		}
 		return nil
@@ -193,10 +199,44 @@ func PublicClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
+// nonPublic are the special-purpose ranges (RFC 6890 and successors) the
+// net/netip predicates do not cover: shared address space (CGNAT, used for
+// pod and service networks), IETF protocol assignments, benchmarking,
+// documentation, reserved, and their IPv6 counterparts.
+var nonPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+// public reports whether ip is a public unicast address.
+func public(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, p := range nonPublic {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
 // ManifestDigest resolves a tag to the digest of its manifest: the registry's
 // Docker-Content-Digest on a HEAD, else the sha256 of the manifest body.
 func (c *Registry) ManifestDigest(ctx context.Context, ref Reference, tag string) (string, error) {
-	if err := c.allowed(ref.Host); err != nil {
+	if err := c.Allowed(ref.Host); err != nil {
 		return "", err
 	}
 	manifestURL := fmt.Sprintf("%s/v2/%s/manifests/%s", ref.baseURL(), ref.Repository, url.PathEscape(tag))
@@ -214,9 +254,13 @@ func (c *Registry) ManifestDigest(ctx context.Context, ref Reference, tag string
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read manifest %s:%s: %w", ref.Repository, tag, err)
+	}
+	if len(body) > maxManifestBytes {
+		// A cut body hashes to a digest no manifest has.
+		return "", fmt.Errorf("manifest %s/%s:%s is larger than %d bytes and the registry sent no Docker-Content-Digest", ref.Host, ref.Repository, tag, maxManifestBytes)
 	}
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
@@ -270,9 +314,7 @@ func (c *Registry) request(ctx context.Context, method, target, bearer string) (
 }
 
 func (c *Registry) cachedToken(host, scope string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if t, ok := c.tokens[host+" "+scope]; ok && time.Now().Before(t.expires) {
+	if t, ok := c.tokens.Get(host + " " + scope); ok && time.Now().Before(t.expires) {
 		return t.value
 	}
 	return ""
@@ -295,7 +337,7 @@ func (c *Registry) fetchToken(ctx context.Context, ref Reference, challenge, fal
 		return "", fmt.Errorf("%w: registry %s names a token realm over %s", ErrHostNotAllowed, ref.Host, realm.Scheme)
 	}
 	if !strings.EqualFold(realm.Host, ref.Host) {
-		if err := c.allowed(realm.Host); err != nil {
+		if err := c.Allowed(realm.Host); err != nil {
 			return "", fmt.Errorf("registry %s token realm: %w", ref.Host, err)
 		}
 	}
@@ -340,29 +382,8 @@ func (c *Registry) fetchToken(ctx context.Context, ref Reference, challenge, fal
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
-	c.store(ref.Host+" "+fallbackScope, token{value: tok, expires: time.Now().Add(ttl - 10*time.Second)})
+	c.tokens.Add(ref.Host+" "+fallbackScope, token{value: tok, expires: time.Now().Add(ttl - 10*time.Second)})
 	return tok, nil
-}
-
-// store keeps a bearer, dropping expired ones, then any, beyond maxTokens.
-func (c *Registry) store(key string, t token) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.tokens) >= maxTokens {
-		now := time.Now()
-		for k, v := range c.tokens {
-			if !now.Before(v.expires) {
-				delete(c.tokens, k)
-			}
-		}
-		for k := range c.tokens {
-			if len(c.tokens) < maxTokens {
-				break
-			}
-			delete(c.tokens, k)
-		}
-	}
-	c.tokens[key] = t
 }
 
 // parseChallenge splits `Bearer k="v",k2="v2"` into its parameters.
