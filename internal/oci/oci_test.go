@@ -129,3 +129,13 @@ func TestRegistryWithAnEmptyAllowlistAsksNone(t *testing.T) {
 	}
 	assert.NoError(t, oci.NewRegistry(nil, nil).Allowed(oci.DefaultHosts[0]), "nil is the defaults")
 }
+
+// A redirect off the allowlist is not followed.
+func TestRegistryFollowsRedirectsToAllowedHostsOnly(t *testing.T) {
+	f := ocitest.New(t, "giantswarm/skills/kubectl")
+	f.Tags = []string{"1.4.0"}
+	f.Redirect = "http://metadata.example.internal/latest"
+	r := oci.NewRegistry([]string{f.Host()}, f.Client())
+	_, err := r.ManifestDigest(t.Context(), f.Reference(), "1.4.0")
+	require.ErrorIs(t, err, oci.ErrHostNotAllowed)
+}

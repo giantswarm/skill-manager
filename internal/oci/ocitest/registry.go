@@ -28,6 +28,9 @@ type Registry struct {
 	Realm string
 	// FailBody, when set, is the body of a 500 every manifest request gets.
 	FailBody string
+	// Redirect, when set, is where every authorized manifest request is
+	// redirected.
+	Redirect string
 	// Manifest, when set, is every tag's manifest body, answered without a
 	// Docker-Content-Digest.
 	Manifest []byte
@@ -79,6 +82,10 @@ func (f *Registry) handler() http.Handler {
 			}
 			w.Header().Set("Www-Authenticate", `Bearer realm="`+realm+`",service="fake",scope="repository:`+f.Repo+`:pull"`)
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if f.Redirect != "" {
+			http.Redirect(w, r, f.Redirect, http.StatusTemporaryRedirect)
 			return
 		}
 		if f.FailBody != "" {

@@ -2,7 +2,8 @@
 // moved with the skills from agent-manager: the digest a tag resolves to, the
 // pin kagent requires for a skill image. A request names its registry, so the
 // client asks only allowed registries, never by IP address, dials public
-// addresses only, and follows a token realm only to an allowed host.
+// addresses only, and follows a token realm or a redirect only to an allowed
+// host.
 package oci
 
 import (
@@ -159,7 +160,17 @@ func NewRegistry(hosts []string, client *http.Client) *Registry {
 	if client == nil {
 		client = PublicClient(60 * time.Second)
 	}
-	return &Registry{http: client, hosts: allowed, tokens: lru.New[string, token](maxTokens)}
+	r := &Registry{hosts: allowed, tokens: lru.New[string, token](maxTokens)}
+	// A redirect is a request too: it goes to an allowed host only.
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return r.Allowed(req.URL.Host)
+	}
+	r.http = &c
+	return r
 }
 
 // Allowed refuses a host that is not on the allowlist or is an IP address.
