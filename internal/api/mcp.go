@@ -65,13 +65,15 @@ func prop(typ, desc string) map[string]any {
 
 // itemSchema is one skill or plugin of resolve_skills.
 var itemSchema = map[string]any{
-	"type": "object",
+	"type":                 "object",
+	"additionalProperties": false,
 	"properties": map[string]any{
 		"name": prop("string", ""),
 		"path": prop("string", "Directory in the repository; empty is its root"),
 		"git": map[string]any{
-			"type":     "object",
-			"required": []string{"url"},
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"url"},
 			"properties": map[string]any{
 				"url":    prop("string", "https://github.com/<owner>/<repo>"),
 				"ref":    prop("string", "Branch, tag or commit; empty: the ref of the source holding path, else the default branch"),
@@ -79,9 +81,10 @@ var itemSchema = map[string]any{
 			},
 		},
 		"oci": map[string]any{
-			"type":       "object",
-			"required":   []string{"ref"},
-			"properties": map[string]any{"ref": prop("string", "<registry>/<repository>[:<tag>|@sha256:<digest>]")},
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"ref"},
+			"properties":           map[string]any{"ref": prop("string", "<registry>/<repository>[:<tag>|@sha256:<digest>]")},
 		},
 		"skills":       map[string]any{"type": "array", "items": prop("string", ""), "description": "A plugin's skill selection, passed through"},
 		"claudeFormat": prop("boolean", "Plugins: true refuses one that is not a Claude Code plugin"),
@@ -132,6 +135,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 		readOnly(),
 		mcp.WithArray("skills", mcp.Description("Skills: {name, path, git: {url, ref | commit}} or {name, oci: {ref}}"), mcp.Items(itemSchema)),
 		mcp.WithArray("plugins", mcp.Description("Plugins: {path, skills, git: {url, ref | commit}} or {skills, oci: {ref}}"), mcp.Items(itemSchema)),
+		mcp.WithSchemaAdditionalProperties(false),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		in, err := decodeRequest(req.GetArguments())
 		if err != nil {

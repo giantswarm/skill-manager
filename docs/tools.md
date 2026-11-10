@@ -59,16 +59,19 @@ Returns the items with git.commit set and git.ref dropped, or oci.ref by digest;
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "plugins": {
       "description": "Plugins: {path, skills, git: {url, ref | commit}} or {skills, oci: {ref}}",
       "items": {
+        "additionalProperties": false,
         "properties": {
           "claudeFormat": {
             "description": "Plugins: true refuses one that is not a Claude Code plugin",
             "type": "boolean"
           },
           "git": {
+            "additionalProperties": false,
             "properties": {
               "commit": {
                 "description": "Full commit id to keep instead of a ref",
@@ -92,6 +95,7 @@ Returns the items with git.commit set and git.ref dropped, or oci.ref by digest;
             "type": "string"
           },
           "oci": {
+            "additionalProperties": false,
             "properties": {
               "ref": {
                 "description": "<registry>/<repository>[:<tag>|@sha256:<digest>]",
@@ -122,12 +126,14 @@ Returns the items with git.commit set and git.ref dropped, or oci.ref by digest;
     "skills": {
       "description": "Skills: {name, path, git: {url, ref | commit}} or {name, oci: {ref}}",
       "items": {
+        "additionalProperties": false,
         "properties": {
           "claudeFormat": {
             "description": "Plugins: true refuses one that is not a Claude Code plugin",
             "type": "boolean"
           },
           "git": {
+            "additionalProperties": false,
             "properties": {
               "commit": {
                 "description": "Full commit id to keep instead of a ref",
@@ -151,6 +157,7 @@ Returns the items with git.commit set and git.ref dropped, or oci.ref by digest;
             "type": "string"
           },
           "oci": {
+            "additionalProperties": false,
             "properties": {
               "ref": {
                 "description": "<registry>/<repository>[:<tag>|@sha256:<digest>]",
