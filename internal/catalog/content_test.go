@@ -64,6 +64,8 @@ func TestSkillContentOfAPrivateRepositoryForItsReaders(t *testing.T) {
 }
 
 func TestSkillFileRefusesAMalformedFilePath(t *testing.T) {
-	_, err := contentService().SkillFile(t.Context(), catalogtest.SkillsRepo, catalogtest.MainHead, "skills/ops", "../secret")
-	require.ErrorIs(t, err, ErrInvalid)
+	for _, file := range []string{"", ".", "../secret", "a/../b", "/etc/passwd", "a//b", "a/"} {
+		_, err := contentService().SkillFile(t.Context(), catalogtest.SkillsRepo, catalogtest.MainHead, "skills/ops", file)
+		require.ErrorIs(t, err, ErrInvalid, "%q", file)
+	}
 }

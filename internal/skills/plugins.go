@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"path"
 	"sort"
 	"strings"
 )
@@ -41,18 +42,15 @@ type Plugin struct {
 type PluginSkill struct {
 	// Name is the skill's directory under skills/.
 	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 }
 
-// manifestRoot is the directory a manifest at path makes a plugin root.
-func manifestRoot(path, manifest string) (string, bool) {
-	if path == manifest {
+// manifestRoot is the directory a manifest at file makes a plugin root.
+func manifestRoot(file, manifest string) (string, bool) {
+	if file == manifest {
 		return "", true
 	}
-	if strings.HasSuffix(path, "/"+manifest) {
-		return strings.TrimSuffix(path, "/"+manifest), true
-	}
-	return "", false
+	return strings.CutSuffix(file, "/"+manifest)
 }
 
 // pluginsOf finds the plugins among a repository's file paths. A package's
@@ -60,8 +58,8 @@ func manifestRoot(path, manifest string) (string, bool) {
 // no read beyond the listing is needed.
 func pluginsOf(files []string, skills []Skill, repoName string) []Plugin {
 	formats := map[string]PluginFormat{}
-	for _, path := range files {
-		if root, ok := manifestRoot(path, claudeManifest); ok {
+	for _, file := range files {
+		if root, ok := manifestRoot(file, claudeManifest); ok {
 			if _, seen := formats[root]; !seen {
 				formats[root] = FormatClaudeCode
 			}
@@ -69,22 +67,19 @@ func pluginsOf(files []string, skills []Skill, repoName string) []Plugin {
 		// A hidden directory holding a plugin.json (.claude-plugin, and other
 		// tools' .codex-plugin or .cursor-plugin) is a manifest of its parent,
 		// never a package of its own.
-		if root, ok := manifestRoot(path, agentPluginsManifest); ok && !strings.HasPrefix(root[strings.LastIndex(root, "/")+1:], ".") {
+		if root, ok := manifestRoot(file, agentPluginsManifest); ok && (root == "" || !strings.HasPrefix(path.Base(root), ".")) {
 			formats[root] = FormatAgentPlugins
 		}
 	}
 	out := make([]Plugin, 0, len(formats))
-	for path, format := range formats {
+	for root, format := range formats {
 		name := repoName
-		if path != "" {
-			name = path[strings.LastIndex(path, "/")+1:]
+		if root != "" {
+			name = path.Base(root)
 		}
-		p := Plugin{Name: name, Path: path, Format: format, Skills: []PluginSkill{}}
+		p := Plugin{Name: name, Path: root, Format: format, Skills: []PluginSkill{}}
 		if format == FormatAgentPlugins {
-			prefix := "skills/"
-			if path != "" {
-				prefix = path + "/skills/"
-			}
+			prefix := joinPluginPath(root, "skills/")
 			for _, s := range skills {
 				rest, ok := strings.CutPrefix(s.Path, prefix)
 				if ok && rest != "" && !strings.Contains(rest, "/") {

@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"io/fs"
 
 	"github.com/giantswarm/skill-manager/internal/identity"
 	"github.com/giantswarm/skill-manager/internal/skills"
@@ -28,7 +29,7 @@ func (s *Service) SkillFile(ctx context.Context, repoURL, commit, dir, file stri
 	if err != nil {
 		return nil, err
 	}
-	if !skills.ValidSkillFile(file) {
+	if file == "." || !fs.ValidPath(file) {
 		return nil, fmt.Errorf("%w: file %q must be a path relative to the skill directory", ErrInvalid, file)
 	}
 	f, err := s.skills.SkillFile(ctx, repoURL, commit, dir, file)

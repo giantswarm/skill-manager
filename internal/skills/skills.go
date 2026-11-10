@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -457,17 +458,8 @@ func (d *Discoverer) read(ctx context.Context, src Source) (Repository, error) {
 		dir := skillDir(path)
 		doc := frontmatter(content)
 		fm := scalars(doc)
-		skillName := strings.TrimSpace(fm["name"])
-		if skillName == "" {
-			if dir != "" {
-				parts := strings.Split(dir, "/")
-				skillName = parts[len(parts)-1]
-			} else {
-				skillName = name
-			}
-		}
 		repo.Skills = append(repo.Skills, Skill{
-			Name:        skillName,
+			Name:        skillName(fm, dir, name),
 			Description: strings.TrimSpace(fm["description"]),
 			Path:        dir,
 			Tags:        metadataTags(doc, d.cfg.Tags),
@@ -534,26 +526,43 @@ func (d *Discoverer) tree(ctx context.Context, owner, name, commit, dir string) 
 // frontmatter parses the YAML block between the leading `---` lines; nil
 // when there is none or it does not parse.
 func frontmatter(content string) map[string]any {
+	doc, _ := splitFrontmatter(content)
+	return doc
+}
+
+// splitFrontmatter is the parsed frontmatter and the body below it; without
+// a closed frontmatter block, nil and the whole content. A block that does
+// not parse as YAML is nil with the body still split off.
+func splitFrontmatter(content string) (map[string]any, string) {
 	content = strings.TrimPrefix(content, "\uFEFF")
 	lines := strings.Split(content, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return nil
+	if strings.TrimSpace(lines[0]) != "---" {
+		return nil, content
 	}
-	end := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			end = i
-			break
+	for end := 1; end < len(lines); end++ {
+		if strings.TrimSpace(lines[end]) != "---" {
+			continue
 		}
+		body := strings.Join(lines[end+1:], "\n")
+		var doc map[string]any
+		if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
+			return nil, body
+		}
+		return doc, body
 	}
-	if end < 0 {
-		return nil
+	return nil, content
+}
+
+// skillName is the frontmatter name, else the skill directory's name, else
+// (a skill at the repository root) the repository's.
+func skillName(fm map[string]string, dir, repoName string) string {
+	if name := strings.TrimSpace(fm["name"]); name != "" {
+		return name
 	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
-		return nil
+	if dir != "" {
+		return path.Base(dir)
 	}
-	return doc
+	return repoName
 }
 
 // scalars keeps the frontmatter's string fields.

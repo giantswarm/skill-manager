@@ -1,15 +1,15 @@
 package skills
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // The caps of a skill's content, the portal's: files listed per skill and
@@ -32,10 +32,6 @@ const (
 // own heuristic.
 const binarySniffBytes = 8000
 
-// ErrInvalidFile marks a file path that is not a well-formed path relative
-// to a skill directory.
-var ErrInvalidFile = errors.New("invalid skill file path")
-
 // binaryExtensions are read as binary without fetching the file.
 var binaryExtensions = map[string]bool{
 	"7z": true, "a": true, "avi": true, "bin": true, "bmp": true, "bz2": true, "class": true, "db": true,
@@ -43,7 +39,7 @@ var binaryExtensions = map[string]bool{
 	"gz": true, "ico": true, "jar": true, "jpeg": true, "jpg": true, "mkv": true, "mov": true, "mp3": true,
 	"mp4": true, "npy": true, "npz": true, "o": true, "odt": true, "ogg": true, "otf": true, "parquet": true,
 	"pdf": true, "pkl": true, "png": true, "ppt": true, "pptx": true, "psd": true, "pyc": true, "rar": true,
-	"so": true, "sqlite": true, "tar": true, "tgz": true, "tif": true, "tiff": true, "ttf": true, "wasm": true,
+	"so": true, "sqlite": true, "tar": true, "tgz": true, "tif": true, "tiff": true, "ttf": true, "war": true, "wasm": true,
 	"wav": true, "webm": true, "webp": true, "woff": true, "woff2": true, "xls": true, "xlsx": true, "xz": true,
 	"zip": true, "zst": true,
 }
@@ -86,7 +82,8 @@ type FileContent struct {
 }
 
 // skillEntry is a skill at a commit: immutable once read, so kept until
-// evicted; a definite miss is kept until expires.
+// evicted; a definite miss is kept until expires. files are all the skill's
+// files in the order SkillContent lists them, past MaxSkillFiles too.
 type skillEntry struct {
 	content *SkillContent
 	files   []File
@@ -115,18 +112,17 @@ func (d *Discoverer) Skill(ctx context.Context, repoURL, commit, dir string) (*S
 	return &out, nil
 }
 
-// SkillFile reads one file of the skill at dir. A binary file by name or one
-// over MaxInlineFileBytes is answered from the listing without fetching it.
+// SkillFile reads one file of the skill at dir; file must be one of the
+// skill's files, so only a path GitHub listed is ever requested. A binary
+// file by name or one over MaxInlineFileBytes is answered from the listing
+// without fetching it.
 func (d *Discoverer) SkillFile(ctx context.Context, repoURL, commit, dir, file string) (*FileContent, error) {
-	if !ValidSkillFile(file) {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidFile, file)
-	}
 	e, err := d.skillAt(ctx, repoURL, commit, dir)
 	if err != nil {
 		return nil, err
 	}
-	i := sort.Search(len(e.files), func(i int) bool { return e.files[i].Path >= file })
-	if i == len(e.files) || e.files[i].Path != file {
+	i := slices.IndexFunc(e.files, func(f File) bool { return f.Path == file })
+	if i < 0 {
 		return nil, fmt.Errorf("%w: %s is no file of the skill at %s", ErrNotFound, file, dir)
 	}
 	f := e.files[i]
@@ -150,7 +146,8 @@ func (d *Discoverer) SkillFile(ctx context.Context, repoURL, commit, dir, file s
 	switch {
 	case len(raw) > MaxInlineFileBytes:
 		out.Truncated = true
-	case bytes.IndexByte([]byte(raw[:min(len(raw), binarySniffBytes)]), 0) >= 0:
+	case strings.IndexByte(raw[:min(len(raw), binarySniffBytes)], 0) >= 0 || !utf8.ValidString(raw):
+		// Invalid UTF-8 would reach the JSON answer with its bytes replaced.
 		out.Binary = true
 	default:
 		out.Content = &raw
@@ -168,8 +165,10 @@ func (d *Discoverer) skillAt(ctx context.Context, repoURL, commit, dir string) (
 		return e, e.err
 	}
 	v, _, _ := d.reads.Do("content "+key, func() (any, error) {
+		// Shared by every caller waiting on key: one that gives up must not
+		// fail the others. withSlot bounds the read.
 		e := skillEntry{}
-		e.content, e.files, e.err = d.readSkill(ctx, owner, name, commit, dir)
+		e.content, e.files, e.err = d.readSkill(context.WithoutCancel(ctx), owner, name, commit, dir)
 		switch {
 		case e.err == nil:
 			d.contents.Add(key, e)
@@ -186,15 +185,17 @@ func (d *Discoverer) skillAt(ctx context.Context, repoURL, commit, dir string) (
 func (d *Discoverer) readSkill(ctx context.Context, owner, name, commit, dir string) (*SkillContent, []File, error) {
 	repoURL := canonicalRepoURL(owner, name)
 	var (
-		tree gitTree
 		raw  string
+		tree gitTree
 	)
+	// SKILL.md first: a directory without one costs a single request, not a
+	// recursive tree read.
 	err := d.withSlot(ctx, func(ctx context.Context) error {
 		var err error
-		if tree, err = d.tree(ctx, owner, name, commit, dir); err != nil {
+		if raw, err = d.gh.raw(ctx, owner, name, joinPluginPath(dir, skillFile), commit); err != nil {
 			return err
 		}
-		raw, err = d.gh.raw(ctx, owner, name, joinPluginPath(dir, skillFile), commit)
+		tree, err = d.tree(ctx, owner, name, commit, dir)
 		return err
 	})
 	if err != nil {
@@ -203,30 +204,24 @@ func (d *Discoverer) readSkill(ctx context.Context, owner, name, commit, dir str
 	files := ownFiles(tree, dir)
 	doc, body := splitFrontmatter(raw)
 	fm := scalars(doc)
-	skillName := strings.TrimSpace(fm["name"])
-	if skillName == "" {
-		skillName = name
-		if dir != "" {
-			skillName = path.Base(dir)
-		}
-	}
-	listed := orderedFiles(files)
+	n := min(len(files), MaxSkillFiles)
 	c := &SkillContent{
-		RepoURL:      repoURL,
-		Path:         dir,
-		Commit:       commit,
-		Name:         skillName,
-		Description:  strings.TrimSpace(fm["description"]),
-		Tags:         metadataTags(doc, d.cfg.Tags),
-		Instructions: strings.TrimSpace(body),
-		Files:        listed[:min(len(listed), MaxSkillFiles)],
+		RepoURL:        repoURL,
+		Path:           dir,
+		Commit:         commit,
+		Name:           skillName(fm, dir, name),
+		Description:    strings.TrimSpace(fm["description"]),
+		Tags:           metadataTags(doc, d.cfg.Tags),
+		Instructions:   strings.TrimSpace(body),
+		Files:          files[:n:n],
+		FilesTruncated: len(files) > MaxSkillFiles || tree.Truncated,
 	}
-	c.FilesTruncated = len(listed) > MaxSkillFiles || tree.Truncated
 	return c, files, nil
 }
 
 // ownFiles are the blobs below dir that belong to its skill, relative to
-// dir and sorted by path: a file below a nested SKILL.md is that skill's.
+// dir, SKILL.md first and the rest by path: a file below a nested SKILL.md
+// is that skill's.
 func ownFiles(tree gitTree, dir string) []File {
 	nested := map[string]bool{}
 	for _, e := range tree.Tree {
@@ -239,10 +234,6 @@ func ownFiles(tree gitTree, dir string) []File {
 		if e.Type != "blob" {
 			continue
 		}
-		rel := e.Path
-		if dir != "" {
-			rel = strings.TrimPrefix(e.Path, dir+"/")
-		}
 		owned := true
 		for p := path.Dir(e.Path); p != "." && p != dir; p = path.Dir(p) {
 			if nested[p] {
@@ -251,26 +242,24 @@ func ownFiles(tree gitTree, dir string) []File {
 			}
 		}
 		if owned {
+			rel := e.Path
+			if dir != "" {
+				rel = strings.TrimPrefix(e.Path, dir+"/")
+			}
 			out = append(out, File{Path: rel, Size: e.Size, SHA: e.SHA})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out
-}
-
-// orderedFiles is files with SKILL.md first.
-func orderedFiles(files []File) []File {
-	out := make([]File, 0, len(files))
-	for _, f := range files {
-		if f.Path == skillFile {
-			out = append(out, f)
+	slices.SortFunc(out, func(a, b File) int {
+		switch {
+		case a.Path == b.Path:
+			return 0
+		case a.Path == skillFile:
+			return -1
+		case b.Path == skillFile:
+			return 1
 		}
-	}
-	for _, f := range files {
-		if f.Path != skillFile {
-			out = append(out, f)
-		}
-	}
+		return strings.Compare(a.Path, b.Path)
+	})
 	return out
 }
 
@@ -302,44 +291,8 @@ func contentError(repoURL, commit string, err error) error {
 	return fmt.Errorf("%w: %s at %s: %v", ErrUpstream, repoURL, commit, err)
 }
 
-// ValidSkillFile reports whether file is a well-formed path relative to a
-// skill directory: no leading /, no empty, . or .. segment, no backslash or
-// control character.
-func ValidSkillFile(file string) bool {
-	if file == "" || len(file) > 1024 {
-		return false
-	}
-	for _, r := range file {
-		if r == '\\' || r < 0x20 || r == 0x7f {
-			return false
-		}
-	}
-	for _, seg := range strings.Split(file, "/") {
-		if seg == "" || seg == "." || seg == ".." {
-			return false
-		}
-	}
-	return true
-}
-
 func binaryByName(file string) bool {
 	base := path.Base(file)
 	dot := strings.LastIndexByte(base, '.')
 	return dot > 0 && binaryExtensions[strings.ToLower(base[dot+1:])]
-}
-
-// splitFrontmatter is the parsed frontmatter and the body below it; without
-// frontmatter, nil and the whole content.
-func splitFrontmatter(content string) (map[string]any, string) {
-	content = strings.TrimPrefix(content, "\uFEFF")
-	lines := strings.Split(content, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return nil, content
-	}
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			return frontmatter(content), strings.Join(lines[i+1:], "\n")
-		}
-	}
-	return nil, content
 }
