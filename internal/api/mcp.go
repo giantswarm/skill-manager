@@ -27,6 +27,8 @@ const (
 	ToolListSkillSources = "list_skill_sources"
 	ToolListSkills       = "list_skills"
 	ToolResolveSkills    = "resolve_skills"
+	ToolGetSkill         = "get_skill"
+	ToolGetSkillFile     = "get_skill_file"
 )
 
 // SourcesResult is list_skill_sources' result and GET /v1/sources' body.
@@ -117,7 +119,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 
 	s.AddTool(mcp.NewTool(ToolListSkills,
 		tooldesc.Describe("List the skills of the configured skill sources, with each source's commit.",
-			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds."),
+			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags; per plugin its name, path and format (agent-plugins: root plugin.json, select its skills by name; claude-code: .claude-plugin/plugin.json, loaded whole). Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds."),
 		readOnly(),
 		mcp.WithString("source", mcp.Description("Only this repository, any https://github.com/<owner>/<repo>; a configured one keeps its ref and path. Default: every source")),
 		mcp.WithBoolean("refresh", mcp.Description("Re-read a listing older than 10 seconds instead of serving it from the cache")),
@@ -142,6 +144,37 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 			return mcp.NewToolResultError("invalid arguments: " + err.Error()), nil
 		}
 		res, err := svc.Resolve(ctx, in)
+		if err != nil {
+			return toolError(err), nil
+		}
+		return jsonResult(res)
+	})
+
+	s.AddTool(mcp.NewTool(ToolGetSkill,
+		tooldesc.Describe("Read one skill of the catalogue at a commit: its SKILL.md and its files.",
+			"Returns name, description, tags, instructions (the body below the frontmatter) and files (path, size, sha; SKILL.md first, at most 200, filesTruncated past that). A file below a nested SKILL.md belongs to that skill. Only a full commit id, only below a configured source, and a private repository only for a caller who can read it."),
+		readOnly(),
+		mcp.WithString("url", mcp.Required(), mcp.Description("https://github.com/<owner>/<repo>, a configured source")),
+		mcp.WithString("commit", mcp.Required(), mcp.Description("Full commit id, as list_skills reports it")),
+		mcp.WithString("path", mcp.Description("The skill directory; empty is the repository root")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		res, err := svc.Skill(ctx, req.GetString("url", ""), req.GetString("commit", ""), req.GetString("path", ""))
+		if err != nil {
+			return toolError(err), nil
+		}
+		return jsonResult(res)
+	})
+
+	s.AddTool(mcp.NewTool(ToolGetSkillFile,
+		tooldesc.Describe("Read one file of a skill at a commit.",
+			"Returns path, size, sha, binary, truncated, and content for a text file of at most 512 KiB. The file must be one get_skill lists; the same checks as get_skill apply."),
+		readOnly(),
+		mcp.WithString("url", mcp.Required(), mcp.Description("https://github.com/<owner>/<repo>, a configured source")),
+		mcp.WithString("commit", mcp.Required(), mcp.Description("Full commit id")),
+		mcp.WithString("path", mcp.Description("The skill directory; empty is the repository root")),
+		mcp.WithString("file", mcp.Required(), mcp.Description("Path relative to the skill directory, e.g. references/style.md")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		res, err := svc.SkillFile(ctx, req.GetString("url", ""), req.GetString("commit", ""), req.GetString("path", ""), req.GetString("file", ""))
 		if err != nil {
 			return toolError(err), nil
 		}

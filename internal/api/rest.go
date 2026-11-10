@@ -32,11 +32,12 @@ func NewREST(svc *catalog.Service, log *slog.Logger) *REST {
 }
 
 // Patterns are the routes' ServeMux patterns.
-var Patterns = []string{"GET " + Prefix + "/sources", "GET " + Prefix + "/skills", "POST " + Prefix + "/resolve"}
+var Patterns = []string{"GET " + Prefix + "/sources", "GET " + Prefix + "/skills", "POST " + Prefix + "/resolve",
+	"GET " + Prefix + "/skills/content", "GET " + Prefix + "/skills/content/file"}
 
 // Register mounts the routes on mux, in the order of Patterns.
 func (h *REST) Register(mux *http.ServeMux) {
-	for i, f := range []http.HandlerFunc{h.sources, h.skills, h.resolve} {
+	for i, f := range []http.HandlerFunc{h.sources, h.skills, h.resolve, h.skillContent, h.skillFile} {
 		mux.HandleFunc(Patterns[i], f)
 	}
 }
@@ -53,6 +54,26 @@ func (h *REST) sources(w http.ResponseWriter, r *http.Request) {
 func (h *REST) skills(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	res, err := h.svc.List(r.Context(), q.Get("source"), strings.EqualFold(q.Get("refresh"), "true"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *REST) skillContent(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	res, err := h.svc.Skill(r.Context(), q.Get("url"), q.Get("commit"), q.Get("path"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *REST) skillFile(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	res, err := h.svc.SkillFile(r.Context(), q.Get("url"), q.Get("commit"), q.Get("path"), q.Get("file"))
 	if err != nil {
 		h.writeError(w, err)
 		return

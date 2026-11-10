@@ -6,6 +6,7 @@ package catalogtest
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -170,4 +171,36 @@ func (p *Pinner) CommitExists(_ context.Context, repoURL, commit string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %w: commit %s of %s", skills.ErrUnresolvable, skills.ErrNotFound, commit, repoURL)
+}
+
+// Holds reports whether one of the listing's repositories holds dir below
+// its path.
+func (l Lister) Holds(repoURL, dir string) bool {
+	for _, r := range l.Repos {
+		if r.RepoURL == repoURL && (r.Path == "" || dir == r.Path || strings.HasPrefix(dir, r.Path+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// Skill answers a skill named after its directory; a dir containing
+// "missing" does not exist.
+func (l Lister) Skill(_ context.Context, repoURL, commit, dir string) (*skills.SkillContent, error) {
+	if strings.Contains(dir, "missing") {
+		return nil, fmt.Errorf("%w: %s at %s", skills.ErrNotFound, dir, commit)
+	}
+	return &skills.SkillContent{RepoURL: repoURL, Path: dir, Commit: commit, Name: path.Base(dir), Files: []skills.File{{Path: "SKILL.md"}}}, nil
+}
+
+// SkillFile answers SKILL.md of any skill Skill answers.
+func (l Lister) SkillFile(ctx context.Context, repoURL, commit, dir, file string) (*skills.FileContent, error) {
+	if _, err := l.Skill(ctx, repoURL, commit, dir); err != nil {
+		return nil, err
+	}
+	if file != "SKILL.md" {
+		return nil, fmt.Errorf("%w: %s", skills.ErrNotFound, file)
+	}
+	text := "---\nname: x\n---\n"
+	return &skills.FileContent{File: skills.File{Path: file}, Content: &text}, nil
 }

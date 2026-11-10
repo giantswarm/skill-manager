@@ -17,11 +17,17 @@ Anything else is `401`. The ID token is validated before GitHub is asked about a
 | Call | Answer |
 |---|---|
 | `GET /v1/sources` | `{"sources": [{url, ref, path, readOnly, commit, error}]}`: each ref's commit, cached up to `cacheTTL`; no skills read |
-| `GET /v1/skills?source=<url>&refresh=true` | `{"repositories": [{repoUrl, ref, path, readOnly, commit, private, truncated, error, stale, fetchedAt, skills: [{name, description, path, tags}]}]}` |
+| `GET /v1/skills?source=<url>&refresh=true` | `{"repositories": [{repoUrl, ref, path, readOnly, commit, private, truncated, error, stale, fetchedAt, skills: [{name, description, path, tags}], plugins: [{name, path, format, skills: [{name, description}]}]}]}` |
 | `POST /v1/resolve` | the request's items pinned |
+| `GET /v1/skills/content?url=<url>&commit=<sha>&path=<dir>` | `{repoUrl, path, commit, name, description, tags, instructions, files: [{path, size, sha}], filesTruncated}` |
+| `GET /v1/skills/content/file?url=<url>&commit=<sha>&path=<dir>&file=<file>` | `{path, size, sha, binary, truncated, content}` |
 | `GET /healthz`, `GET /readyz` | `ok` |
 
 `GET /v1/skills`: `source` is any github.com repository (a configured one keeps its ref and path); one that does not exist and one you cannot read get the same `error`. A repository that cannot be read is still `200`, with `error` on that repository; with a good listing before, `stale: true` and that listing. A failed read is retried after 30 seconds; `refresh` re-reads a listing older than 10 seconds.
+
+A plugin is a directory with a root `plugin.json` (`format: agent-plugins`, an Agent Plugins package; `skills` are the skills directly under its `skills/`, which an agent selects by name) or a `.claude-plugin/plugin.json` (`format: claude-code`, loaded whole; `skills` is empty). A directory with both is `agent-plugins`. A hidden directory (`.claude-plugin`, `.codex-plugin`, `.cursor-plugin`) is its parent's manifest, never a package. A private repository the caller cannot read has empty `skills` and `plugins`.
+
+`GET /v1/skills/content` and `/content/file` read one skill at a full commit id (`400` otherwise), below a configured source (`400` otherwise), a private repository only for a caller who can read it (`403`). `instructions` is the SKILL.md body below the frontmatter. `files` lists the skill directory, SKILL.md first, at most 200 (`filesTruncated`); a file below a nested SKILL.md is that skill's. A file must be one of the skill's files, listed or past the cap (`404` otherwise); `content` is set only for a UTF-8 text file of at most 512 KiB (`binary` by extension, a NUL byte in the first 8000 bytes or invalid UTF-8; `truncated` past the size). At most four reads go to GitHub at once; a read that waits more than 30 seconds is a `502`. A skill at a commit is cached, a missing one for 5 minutes; a file is read from GitHub on each call.
 
 ## `POST /v1/resolve`
 

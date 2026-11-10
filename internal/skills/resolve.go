@@ -182,12 +182,12 @@ func (r *Resolver) ClaudeFormatPlugin(ctx context.Context, repoURL, commit, path
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrUnresolvable, err)
 	}
-	for _, manifest := range []string{"plugin.json", ".claude-plugin/plugin.json"} {
+	for _, manifest := range []string{agentPluginsManifest, claudeManifest} {
 		_, err := r.gh.raw(ctx, owner, repo, joinPluginPath(path, manifest), commit)
 		var api *apiError
 		switch {
 		case err == nil:
-			return manifest != "plugin.json", nil
+			return manifest == claudeManifest, nil
 		case errors.As(err, &api) && api.status == http.StatusNotFound:
 			continue
 		default:

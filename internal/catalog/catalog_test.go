@@ -162,7 +162,8 @@ func TestListWithholdsPrivateRepositories(t *testing.T) {
 	p := &catalogtest.Pinner{}
 	repos := []skills.Repository{
 		{RepoURL: catalogtest.SkillsRepo, Ref: "v1.2.0", Path: "skills", ReadOnly: true, Commit: catalogtest.TagHead, Skills: []skills.Skill{{Name: "overview", Path: "skills/overview"}}},
-		{RepoURL: catalogtest.PrivateRepo, Commit: catalogtest.MainHead, Private: true, Skills: []skills.Skill{{Name: "secret", Path: "secret"}}},
+		{RepoURL: catalogtest.PrivateRepo, Commit: catalogtest.MainHead, Private: true, Skills: []skills.Skill{{Name: "secret", Path: "secret"}},
+			Plugins: []skills.Plugin{{Name: "tools", Path: "tools", Format: skills.FormatClaudeCode, Skills: []skills.PluginSkill{}}}},
 	}
 	svc := New(catalogtest.Lister{Repos: repos}, p)
 
@@ -171,6 +172,8 @@ func TestListWithholdsPrivateRepositories(t *testing.T) {
 	require.Len(t, res.Repositories, 2)
 	assert.Equal(t, repos[0], res.Repositories[0])
 	assert.Empty(t, res.Repositories[1].Skills)
+	assert.NotNil(t, res.Repositories[1].Plugins)
+	assert.Empty(t, res.Repositories[1].Plugins, "a private repository's plugins are withheld with its skills")
 	assert.Empty(t, res.Repositories[1].Commit)
 	assert.Contains(t, res.Repositories[1].Error, "cannot read it")
 

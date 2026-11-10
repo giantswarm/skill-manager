@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -54,6 +55,8 @@ type Repository struct {
 	// Commit is what Ref resolved to when the repository was read.
 	Commit string  `json:"commit,omitempty"`
 	Skills []Skill `json:"skills"`
+	// Plugins are the plugin directories found in the same read.
+	Plugins []Plugin `json:"plugins"`
 	// Private is true for a repository only its collaborators can read:
 	// list_skills shows it only to a caller who can read it.
 	Private bool `json:"private,omitempty"`
@@ -107,7 +110,10 @@ type Discoverer struct {
 	cache *lru.Cache[string, cacheEntry]
 	own   *lru.Cache[string, cacheEntry]
 	heads *lru.Cache[string, headEntry]
-	reads singleflight.Group
+
+	contents     *lru.Cache[string, skillEntry]
+	contentSlots chan struct{}
+	reads        singleflight.Group
 }
 
 // cacheMax bounds the discovery and head caches: a source named in a
@@ -151,7 +157,8 @@ func New(cfg Config, log *slog.Logger) *Discoverer {
 	}
 	return &Discoverer{cfg: cfg, gh: newGitHub(cfg.APIURL, cfg.Tokens, cfg.HTTPClient), log: log,
 		cache: lru.New[string, cacheEntry](cacheMax), own: lru.New[string, cacheEntry](len(cfg.Repositories)),
-		heads: lru.New[string, headEntry](cacheMax)}
+		heads:    lru.New[string, headEntry](cacheMax),
+		contents: lru.New[string, skillEntry](cacheMax), contentSlots: make(chan struct{}, contentReadSlots)}
 }
 
 // cacheFor is the cache of src's listing: the configured sources' own, or
@@ -333,7 +340,7 @@ func (d *Discoverer) reread(ctx context.Context, key string, src Source, cached 
 		repo = *cached.good
 		repo.Stale = true
 	} else {
-		repo = Repository{RepoURL: repoURL, Ref: ref, Path: src.Path, ReadOnly: src.ReadOnly, Skills: []Skill{}, FetchedAt: &now}
+		repo = Repository{RepoURL: repoURL, Ref: ref, Path: src.Path, ReadOnly: src.ReadOnly, Skills: []Skill{}, Plugins: []Plugin{}, FetchedAt: &now}
 	}
 	repo.Private = repo.Private || failed.Private
 	repo.Error = err.Error()
@@ -412,9 +419,13 @@ func (d *Discoverer) read(ctx context.Context, src Source) (Repository, error) {
 	if tree.Truncated {
 		d.log.Warn("skill repository tree truncated by GitHub: some skills are missing from the listing; give the source a path to narrow it", "repository", canonical, "path", src.Path, "commit", head)
 	}
-	var paths []string
+	var paths, files []string
 	for _, entry := range tree.Tree {
-		if entry.Type == "blob" && isSkillFile(entry.Path) {
+		if entry.Type != "blob" {
+			continue
+		}
+		files = append(files, entry.Path)
+		if isSkillFile(entry.Path) {
 			paths = append(paths, entry.Path)
 		}
 	}
@@ -447,17 +458,8 @@ func (d *Discoverer) read(ctx context.Context, src Source) (Repository, error) {
 		dir := skillDir(path)
 		doc := frontmatter(content)
 		fm := scalars(doc)
-		skillName := strings.TrimSpace(fm["name"])
-		if skillName == "" {
-			if dir != "" {
-				parts := strings.Split(dir, "/")
-				skillName = parts[len(parts)-1]
-			} else {
-				skillName = name
-			}
-		}
 		repo.Skills = append(repo.Skills, Skill{
-			Name:        skillName,
+			Name:        skillName(fm, dir, name),
 			Description: strings.TrimSpace(fm["description"]),
 			Path:        dir,
 			Tags:        metadataTags(doc, d.cfg.Tags),
@@ -469,6 +471,7 @@ func (d *Discoverer) read(ctx context.Context, src Source) (Repository, error) {
 		}
 		return repo.Skills[i].Name < repo.Skills[j].Name
 	})
+	repo.Plugins = pluginsOf(files, repo.Skills, name)
 	return repo, nil
 }
 
@@ -478,6 +481,7 @@ type gitTree struct {
 		Path string `json:"path"`
 		Type string `json:"type"`
 		SHA  string `json:"sha"`
+		Size int64  `json:"size"`
 	} `json:"tree"`
 	Truncated bool `json:"truncated"`
 }
@@ -502,7 +506,7 @@ func (d *Discoverer) tree(ctx context.Context, owner, name, commit, dir string) 
 				}
 			}
 			if next == "" {
-				return gitTree{}, fmt.Errorf("path %q does not exist at commit %s", dir, commit)
+				return gitTree{}, fmt.Errorf("path %q does not exist at commit %s: %w", dir, commit, ErrNotFound)
 			}
 			sha = next
 		}
@@ -522,26 +526,43 @@ func (d *Discoverer) tree(ctx context.Context, owner, name, commit, dir string) 
 // frontmatter parses the YAML block between the leading `---` lines; nil
 // when there is none or it does not parse.
 func frontmatter(content string) map[string]any {
+	doc, _ := splitFrontmatter(content)
+	return doc
+}
+
+// splitFrontmatter is the parsed frontmatter and the body below it; without
+// a closed frontmatter block, nil and the whole content. A block that does
+// not parse as YAML is nil with the body still split off.
+func splitFrontmatter(content string) (map[string]any, string) {
 	content = strings.TrimPrefix(content, "\uFEFF")
 	lines := strings.Split(content, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return nil
+	if strings.TrimSpace(lines[0]) != "---" {
+		return nil, content
 	}
-	end := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			end = i
-			break
+	for end := 1; end < len(lines); end++ {
+		if strings.TrimSpace(lines[end]) != "---" {
+			continue
 		}
+		body := strings.Join(lines[end+1:], "\n")
+		var doc map[string]any
+		if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
+			return nil, body
+		}
+		return doc, body
 	}
-	if end < 0 {
-		return nil
+	return nil, content
+}
+
+// skillName is the frontmatter name, else the skill directory's name, else
+// (a skill at the repository root) the repository's.
+func skillName(fm map[string]string, dir, repoName string) string {
+	if name := strings.TrimSpace(fm["name"]); name != "" {
+		return name
 	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
-		return nil
+	if dir != "" {
+		return path.Base(dir)
 	}
-	return doc
+	return repoName
 }
 
 // scalars keeps the frontmatter's string fields.
