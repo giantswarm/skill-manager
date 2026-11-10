@@ -112,3 +112,32 @@ func TestShutdownClosesOpenMCPStreams(t *testing.T) {
 		t.Fatal("Run waited for the open stream")
 	}
 }
+
+// A request with a foreign Origin is refused before anything reads it; one
+// without, as muster sends, and one from the server's own origin pass.
+func TestMCPRefusesForeignOrigins(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	for name, tc := range map[string]struct {
+		allowed, origin string
+		want            int
+	}{
+		"no origin":            {"https://skills.example.com", "", http.StatusOK},
+		"own origin":           {"https://skills.example.com", "https://skills.example.com", http.StatusOK},
+		"foreign origin":       {"https://skills.example.com", "https://evil.example", http.StatusForbidden},
+		"null origin":          {"https://skills.example.com", "null", http.StatusForbidden},
+		"none allowed":         {"", "http://localhost:8080", http.StatusForbidden},
+		"none allowed, no hdr": {"", "", http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			w := httptest.NewRecorder()
+			checkOrigin(tc.allowed, ok).ServeHTTP(w, r)
+			assert.Equal(t, tc.want, w.Code)
+		})
+	}
+	assert.Equal(t, "https://skills.example.com:8443", origin("https://skills.example.com:8443/mcp"))
+	assert.Empty(t, origin("not a url"))
+}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -88,7 +89,11 @@ func New(cfg Config, rest *api.REST, mcpSrv *mcpserver.MCPServer, log *slog.Logg
 		// (CVE-2026-108859); the bound keeps that read to what the REST API
 		// accepts.
 		s.mcp = mcpserver.NewStreamableHTTPServer(mcpSrv, mcpserver.WithEndpointPath(cfg.MCPPath))
-		mux.Handle(cfg.MCPPath, http.MaxBytesHandler(s.guardMCP(s.mcp), maxMCPBodyBytes))
+		allowed := ""
+		if cfg.OAuth != nil {
+			allowed = origin(cfg.OAuth.BaseURL)
+		}
+		mux.Handle(cfg.MCPPath, http.MaxBytesHandler(checkOrigin(allowed, s.guardMCP(s.mcp)), maxMCPBodyBytes))
 	}
 	s.http = &http.Server{
 		Addr:              cfg.Addr,
@@ -127,6 +132,32 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		return next
 	}
 	return s.oauth.protectREST(next)
+}
+
+// checkOrigin refuses an MCP request whose Origin header is present and not
+// allowed with 403, as the Streamable HTTP transport requires against DNS
+// rebinding. The MCP clients are servers (muster), which send no Origin; a
+// browser is only admitted from allowed, this server's own public origin
+// ("" admits none).
+func checkOrigin(allowed string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" && (allowed == "" || !strings.EqualFold(o, allowed)) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"origin not allowed"}}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// origin is the scheme://host[:port] of rawURL; "" when it has none.
+func origin(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // maxMCPBodyBytes bounds an MCP request body, as the REST API bounds its own.
