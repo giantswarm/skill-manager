@@ -252,8 +252,9 @@ func validate(it Item, skill bool) (Item, error) {
 			return it, fmt.Errorf("gives both ref %q and commit %q; give the commit to keep, or the ref to have it resolved", g.Ref, g.Commit)
 		case g.Commit != "" && !skills.CommitPattern.MatchString(g.Commit):
 			return it, fmt.Errorf("git.commit %q is not a full commit id (40 or 64 hex characters)", g.Commit)
-		case strings.ContainsAny(g.Ref, " \t\n"):
-			return it, fmt.Errorf("git.ref %q contains whitespace", g.Ref)
+		}
+		if err := skills.CheckRef(g.Ref); err != nil {
+			return it, fmt.Errorf("git.%w", err)
 		}
 	default:
 		if _, err := oci.ParseImageReference(it.OCI.Ref); err != nil {

@@ -43,6 +43,7 @@ func TestParseSourcesRefusesMalformedEntries(t *testing.T) {
 		"no url":          `[{"ref":"main"}]`,
 		"climbing path":   `[{"url":"https://github.com/a/b","path":"../x"}]`,
 		"ref whitespace":  `[{"url":"https://github.com/a/b","ref":"a b"}]`,
+		"ref climbing":    `[{"url":"https://github.com/a/b","ref":"../../c/d/commits/main"}]`,
 		"absolute path":   `[{"url":"https://github.com/a/b","path":"/skills"}]`,
 		"inner climb":     `[{"url":"https://github.com/a/b","path":"skills/../.."}]`,
 		"duplicate URL":   "https://github.com/a/b,https://github.com/a/b/",
@@ -91,4 +92,13 @@ func TestParseRepoURLRefusesWhatIsNoGitHubName(t *testing.T) {
 func TestFirstLineIsBounded(t *testing.T) {
 	assert.Len(t, firstLine(strings.Repeat("x", 5000)+"\nmore"), maxErrorBody)
 	assert.Equal(t, "short", firstLine("short\nrest"))
+}
+
+func TestCheckRef(t *testing.T) {
+	for _, ref := range []string{"", "main", "release/v1", "v1.4.0", "feature/x-y_z", "0123456789abcdef0123456789abcdef01234567"} {
+		assert.NoError(t, CheckRef(ref), ref)
+	}
+	for _, ref := range []string{"..", "../x", "a/../b", "a/./b", ".hidden", "a//b", "/a", "a/", "a.", "a.lock", "@", "a@{1}", "a b", "a\tb", "a~1", "a^", "a:b", "a?", "a*", "a[", "a\\b"} {
+		assert.Error(t, CheckRef(ref), ref)
+	}
 }

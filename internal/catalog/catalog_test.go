@@ -90,21 +90,23 @@ func TestResolveRefusals(t *testing.T) {
 		list  string
 		index int
 	}{
-		"no source":             {Request{Skills: []Item{{Name: "x"}}}, ErrInvalid, "skills", 0},
-		"both sources":          {Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo}, OCI: &OCI{Ref: "r/x:1"}}}}, ErrInvalid, "skills", 0},
-		"ref and commit":        {Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo, Ref: "main", Commit: catalogtest.MainHead}}}}, ErrInvalid, "skills", 0},
-		"short commit":          {Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo, Commit: "abc"}}}}, ErrInvalid, "skills", 0},
-		"climbing path":         {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "", "../x")}}, ErrInvalid, "skills", 0},
-		"absolute path":         {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "", "/x")}}, ErrInvalid, "skills", 0},
-		"oci skill with path":   {Request{Skills: []Item{{Name: "x", Path: "x", OCI: &OCI{Ref: "ghcr.io/x/y:1"}}}}, ErrInvalid, "skills", 0},
-		"bad oci reference":     {Request{Skills: []Item{{Name: "x", OCI: &OCI{Ref: "not a ref"}}}}, ErrInvalid, "skills", 0},
-		"not github":            {Request{Skills: []Item{gitSkill("x", "https://gitlab.com/x/y", "", "")}}, ErrInvalid, "skills", 0},
-		"unknown ref":           {Request{Skills: []Item{gitSkill("a", catalogtest.SkillsRepo, "", "a"), gitSkill("x", catalogtest.SkillsRepo, "nope", "x")}}, ErrNotFound, "skills", 1},
-		"missing path":          {Request{Plugins: []Item{{Path: "missing", Git: &Git{URL: catalogtest.SkillsRepo}}}}, ErrNotFound, "plugins", 0},
-		"unknown image tag":     {Request{Skills: []Item{{Name: "x", OCI: &OCI{Ref: "ghcr.io/giantswarm/skills/kubectl:9"}}}}, ErrNotFound, "skills", 0},
-		"private, not alice":    {Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}}, ErrForbidden, "skills", 0},
-		"GitHub fails":          {Request{Skills: []Item{gitSkill("x", "https://github.com/giantswarm/down", "", "")}}, ErrUpstream, "skills", 0},
-		"plugin without source": {Request{Plugins: []Item{{Path: "p"}}}, ErrInvalid, "plugins", 0},
+		"no source":                          {Request{Skills: []Item{{Name: "x"}}}, ErrInvalid, "skills", 0},
+		"both sources":                       {Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo}, OCI: &OCI{Ref: "r/x:1"}}}}, ErrInvalid, "skills", 0},
+		"ref and commit":                     {Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo, Ref: "main", Commit: catalogtest.MainHead}}}}, ErrInvalid, "skills", 0},
+		"short commit":                       {Request{Skills: []Item{{Name: "x", Git: &Git{URL: catalogtest.SkillsRepo, Commit: "abc"}}}}, ErrInvalid, "skills", 0},
+		"climbing path":                      {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "", "../x")}}, ErrInvalid, "skills", 0},
+		"absolute path":                      {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "", "/x")}}, ErrInvalid, "skills", 0},
+		"oci skill with path":                {Request{Skills: []Item{{Name: "x", Path: "x", OCI: &OCI{Ref: "ghcr.io/x/y:1"}}}}, ErrInvalid, "skills", 0},
+		"bad oci reference":                  {Request{Skills: []Item{{Name: "x", OCI: &OCI{Ref: "not a ref"}}}}, ErrInvalid, "skills", 0},
+		"not github":                         {Request{Skills: []Item{gitSkill("x", "https://gitlab.com/x/y", "", "")}}, ErrInvalid, "skills", 0},
+		"unknown ref":                        {Request{Skills: []Item{gitSkill("a", catalogtest.SkillsRepo, "", "a"), gitSkill("x", catalogtest.SkillsRepo, "nope", "x")}}, ErrNotFound, "skills", 1},
+		"missing path":                       {Request{Plugins: []Item{{Path: "missing", Git: &Git{URL: catalogtest.SkillsRepo}}}}, ErrNotFound, "plugins", 0},
+		"unknown image tag":                  {Request{Skills: []Item{{Name: "x", OCI: &OCI{Ref: "ghcr.io/giantswarm/skills/kubectl:9"}}}}, ErrNotFound, "skills", 0},
+		"private, not alice":                 {Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}}, ErrForbidden, "skills", 0},
+		"GitHub fails":                       {Request{Skills: []Item{gitSkill("x", "https://github.com/giantswarm/down", "", "")}}, ErrUpstream, "skills", 0},
+		"plugin without source":              {Request{Plugins: []Item{{Path: "p"}}}, ErrInvalid, "plugins", 0},
+		"ref climbing to another repository": {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "../../../../repos/giantswarm/private/commits/main", "")}}, ErrInvalid, "skills", 0},
+		"ref with whitespace":                {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "a b", "")}}, ErrInvalid, "skills", 0},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

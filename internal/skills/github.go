@@ -111,6 +111,9 @@ func (g *github) head(ctx context.Context, owner, repo, ref string, meta *repoMe
 // at right now: the sha media type answers the id alone, not the commit. A
 // commit id GitHub does not have is its 404 or 422.
 func (g *github) headCommit(ctx context.Context, owner, repo, ref string) (string, error) {
+	if err := CheckRef(ref); err != nil {
+		return "", err
+	}
 	body, err := g.get(ctx, fmt.Sprintf("%s/repos/%s/%s/commits/%s", g.apiURL, owner, repo, escapeSegments(ref)), "application/vnd.github.sha")
 	if err != nil {
 		return "", err

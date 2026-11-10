@@ -61,8 +61,9 @@ func ParseSources(value string) ([]Source, error) {
 			continue // an empty item of a comma-separated list
 		case s.URL == "":
 			return nil, fmt.Errorf("skill repository %d has no url", i)
-		case strings.ContainsAny(s.Ref, " \t\n"):
-			return nil, fmt.Errorf("skill repository %s: ref %q contains whitespace", s.URL, s.Ref)
+		}
+		if err := CheckRef(s.Ref); err != nil {
+			return nil, fmt.Errorf("skill repository %s: %w", s.URL, err)
 		}
 		cleaned, err := CleanPath(s.Path)
 		if err != nil {
@@ -92,6 +93,36 @@ func canonicalOrRaw(url string) string {
 		return strings.ToLower(canonicalRepoURL(owner, name))
 	}
 	return strings.ToLower(strings.TrimRight(url, "/"))
+}
+
+// CheckRef refuses a ref that is not a git ref name (git check-ref-format:
+// no "..", no component that is empty or starts with ".", no control
+// character, space, ~ ^ : ? * [ or \, no "@{", not "@", not ending in "/",
+// "." or ".lock"). A ref goes into a GitHub API path, which GitHub resolves
+// dot segments in: "../../<other repository>" would ask about a repository
+// the caller's readability was never checked for. "" (the default branch) is
+// valid.
+func CheckRef(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	bad := ref == "@" || strings.Contains(ref, "..") || strings.Contains(ref, "@{") ||
+		strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") || strings.HasSuffix(ref, ".lock") ||
+		strings.ContainsAny(ref, " ~^:?*[\\")
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f {
+			bad = true
+		}
+	}
+	for _, seg := range strings.Split(ref, "/") {
+		if seg == "" || strings.HasPrefix(seg, ".") {
+			bad = true
+		}
+	}
+	if bad {
+		return fmt.Errorf("ref %q is not a valid git ref name", ref)
+	}
+	return nil
 }
 
 // CleanPath is a directory in a repository in its one form: relative,
