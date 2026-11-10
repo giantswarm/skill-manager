@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -61,6 +62,13 @@ func TestSkillContentOfAPrivateRepositoryForItsReaders(t *testing.T) {
 	require.NoError(t, err)
 	_, err = svc.Skill(identity.ContextWithService(t.Context()), catalogtest.PrivateRepo, catalogtest.MainHead, "x")
 	require.NoError(t, err)
+}
+
+func TestSkillContentTakesTheCommitInLowerCase(t *testing.T) {
+	svc := contentService()
+	got, err := svc.Skill(t.Context(), catalogtest.SkillsRepo, strings.ToUpper(catalogtest.MainHead), "skills/ops")
+	require.NoError(t, err)
+	require.Equal(t, strings.ToLower(catalogtest.MainHead), got.Commit, "one cache entry and one answer per commit")
 }
 
 func TestSkillFileRefusesAMalformedFilePath(t *testing.T) {
