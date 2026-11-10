@@ -1,0 +1,90 @@
+# The muster registration: off by default, one streamable-http MCPServer at
+# the Service in the agent-platform tool group, forwarding the Dex token, or
+# pinned to a GitHub App with the ID token beside it.
+#
+# Run with: make helm-test (helm unittest helm/skill-manager)
+suite: mcpserver registration
+templates:
+  - templates/mcpserver.yaml
+release:
+  name: skill-manager
+  namespace: agent-platform
+set:
+  muster:
+    mcpServer:
+      enabled: true
+      auth:
+        requiredAudiences:
+          - dex-k8s-authenticator
+  oauth:
+    enabled: true
+    existingSecret: platform-oauth
+  global:
+    domain: example.com
+    identity:
+      issuerUrl: https://dex.example.com
+      clientId: platform-client
+tests:
+  - it: registers nothing by default
+    set:
+      muster:
+        mcpServer:
+          enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: registers one streamable-http MCPServer at the Service in the agent-platform tool group
+    asserts:
+      - isKind:
+          of: MCPServer
+      - equal:
+          path: metadata.name
+          value: skill-manager
+      - equal:
+          path: metadata.labels["agent-platform.giantswarm.io/tool-group"]
+          value: agent-platform
+      - equal:
+          path: spec.url
+          value: http://skill-manager.agent-platform.svc.cluster.local:8080/mcp
+      - equal:
+          path: spec.auth
+          value:
+            type: oauth
+            forwardToken: true
+            requiredAudiences:
+              - dex-k8s-authenticator
+
+  - it: pins a GitHub App and forwards the ID token beside it
+    set:
+      muster:
+        mcpServer:
+          auth:
+            github:
+              enabled: true
+    asserts:
+      - equal:
+          path: spec.auth.forwardIdentity
+          value: true
+      - equal:
+          path: spec.auth.authorizationServer.issuer
+          value: https://github.com/apps/giantswarm-agent-manager
+      - equal:
+          path: spec.auth.authorizationServer.clientCredentialsSecretRef
+          value:
+            name: giantswarm-agent-manager-oauth-client
+            namespace: agent-platform
+      - notExists:
+          path: spec.auth.forwardToken
+
+  - it: refuses the pin without OAuth
+    set:
+      oauth:
+        enabled: false
+      muster:
+        mcpServer:
+          auth:
+            github:
+              enabled: true
+    asserts:
+      - failedTemplate: {}

@@ -1,0 +1,13 @@
+# local builds
+/skill-manager
+/skill-manager-linux-*
+/skill-manager-darwin-*
+/skill-manager-windows-*
+/build/
+/dist/
+# editor / OS
+.idea/
+.vscode/
+.DS_Store
+# pinned tool binaries (make golangci-lint)
+/.bin/
