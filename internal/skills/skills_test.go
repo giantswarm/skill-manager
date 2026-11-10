@@ -239,6 +239,24 @@ func TestDiscoverReportsATruncatedTree(t *testing.T) {
 }
 
 // A missing path is the repository's error, not an empty listing.
+// A repository with more SKILL.md files than one read fetches is listed
+// truncated, without the requests for the rest.
+func TestDiscoverCapsTheSkillFilesOfOneRead(t *testing.T) {
+	maxSkillFiles = 2
+	t.Cleanup(func() { maxSkillFiles = 500 })
+	ts, _ := fakeGitHub(t)
+	var logs strings.Builder
+	d := New(Config{Repositories: []Source{{URL: "https://github.com/giantswarm/agent-skills"}}, APIURL: ts.URL, Tokens: StaticToken("secret")},
+		slog.New(slog.NewTextHandler(&logs, nil)))
+
+	res, err := d.List(t.Context(), "", "", false)
+	require.NoError(t, err)
+	repo := res.Repositories[0]
+	assert.True(t, repo.Truncated)
+	assert.Len(t, repo.Skills, 2)
+	assert.Contains(t, logs.String(), "more SKILL.md files")
+}
+
 func TestDiscoverReportsAMissingPath(t *testing.T) {
 	ts, _ := fakeGitHub(t)
 	d := New(Config{Repositories: []Source{{URL: "https://github.com/giantswarm/agent-skills", Ref: "v1.2.0", Path: "nowhere"}}, APIURL: ts.URL, Tokens: StaticToken("secret")}, nil)

@@ -57,8 +57,9 @@ type Repository struct {
 	// Private is true for a repository only its collaborators can read:
 	// list_skills shows it only to a caller who can read it.
 	Private bool `json:"private,omitempty"`
-	// Truncated is true when GitHub capped the tree or a SKILL.md read failed:
-	// some skills may be missing.
+	// Truncated is true when GitHub capped the tree, the repository holds
+	// more than maxSkillFiles SKILL.md files, or a SKILL.md read failed: some
+	// skills may be missing.
 	Truncated bool `json:"truncated"`
 	// Error is set when the repository could not be read at all.
 	Error string `json:"error,omitempty"`
@@ -251,7 +252,7 @@ func (d *Discoverer) SourceRef(repoURL, path string) string {
 // List discovers skills. repository narrows to one repository (configured or
 // not — any github.com URL is accepted; a configured one keeps its ref and
 // path); ref overrides the source's ref (default: the default branch);
-// refresh bypasses the cache.
+// refresh re-reads a listing older than minRefresh.
 func (d *Discoverer) List(ctx context.Context, repository, ref string, refresh bool) (*Result, error) {
 	sources := d.cfg.Repositories
 	if repository != "" {
@@ -349,6 +350,11 @@ const (
 	readParallelism = 8
 )
 
+// maxSkillFiles bounds the SKILL.md files one read fetches: each is a GitHub
+// request at the App's rate limit, and a caller may name any repository. A
+// variable for the tests.
+var maxSkillFiles = 500
+
 // headOf resolves ref (the default branch when empty) to its head commit.
 func (d *Discoverer) headOf(ctx context.Context, repoURL, ref string) (string, error) {
 	owner, name, err := parseRepoURL(repoURL)
@@ -411,6 +417,11 @@ func (d *Discoverer) read(ctx context.Context, src Source) (Repository, error) {
 		if entry.Type == "blob" && isSkillFile(entry.Path) {
 			paths = append(paths, entry.Path)
 		}
+	}
+	if len(paths) > maxSkillFiles {
+		d.log.Warn("skill repository holds more SKILL.md files than one read fetches: some skills are missing from the listing; give the source a path to narrow it", "repository", canonical, "path", src.Path, "files", len(paths), "max", maxSkillFiles)
+		paths = paths[:maxSkillFiles]
+		repo.Truncated = true
 	}
 	contents := make([]string, len(paths))
 	errs := make([]error, len(paths))
