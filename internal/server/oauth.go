@@ -17,17 +17,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
-	"github.com/giantswarm/mcp-oauth/providers/google"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 
 	"github.com/giantswarm/skill-manager/internal/identity"
-)
-
-// OAuth providers.
-const (
-	ProviderDex    = "dex"
-	ProviderGoogle = "google"
 )
 
 // OAuthConfig makes skill-manager an OAuth 2.1 resource server (mcp-oauth)
@@ -42,10 +35,8 @@ type OAuthConfig struct {
 	// BaseURL is the public URL of this server: the OAuth issuer identifier
 	// of its own authorization-server metadata (https, or http on loopback).
 	BaseURL string
-	// Provider is the IdP: dex (default) or google.
-	Provider string
 
-	// Dex provider (Provider == dex).
+	// The platform's Dex.
 	DexIssuerURL    string
 	DexClientID     string
 	DexClientSecret string
@@ -55,10 +46,6 @@ type OAuthConfig struct {
 	// DexAllowPrivateIP lets the issuer resolve to a private/loopback address
 	// (an in-cluster Dex).
 	DexAllowPrivateIP bool
-
-	// Google provider (Provider == google).
-	GoogleClientID     string
-	GoogleClientSecret string
 
 	// TrustedAudiences are the OAuth client ids whose IdP id_tokens are
 	// accepted as bearers (SSO token forwarding): the platform client, and
@@ -100,17 +87,8 @@ func (c OAuthConfig) Validate() error {
 	if err := validateHTTPS(c.BaseURL); err != nil {
 		return err
 	}
-	switch c.provider() {
-	case ProviderDex:
-		if c.DexIssuerURL == "" || c.DexClientID == "" || c.DexClientSecret == "" {
-			return fmt.Errorf("oauth: dex issuer URL, client ID and client secret are required")
-		}
-	case ProviderGoogle:
-		if c.GoogleClientID == "" || c.GoogleClientSecret == "" {
-			return fmt.Errorf("oauth: google client ID and client secret are required")
-		}
-	default:
-		return fmt.Errorf("oauth: provider %q: want %s or %s", c.Provider, ProviderDex, ProviderGoogle)
+	if c.DexIssuerURL == "" || c.DexClientID == "" || c.DexClientSecret == "" {
+		return fmt.Errorf("oauth: dex issuer URL, client ID and client secret are required")
 	}
 	for _, a := range c.TrustedAudiences {
 		if strings.TrimSpace(a) == "" {
@@ -118,13 +96,6 @@ func (c OAuthConfig) Validate() error {
 		}
 	}
 	return nil
-}
-
-func (c OAuthConfig) provider() string {
-	if c.Provider == "" {
-		return ProviderDex
-	}
-	return c.Provider
 }
 
 type oauthRuntime struct {
@@ -167,7 +138,7 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	if err != nil {
 		return nil, fmt.Errorf("oauth: server: %w", err)
 	}
-	log.Info("OAuth resource server enabled", "provider", cfg.provider(), "issuer", cfg.BaseURL,
+	log.Info("OAuth resource server enabled", "issuer", cfg.BaseURL,
 		"trustedAudiences", cfg.TrustedAudiences)
 	o := &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}
 	// The REST API's callers forward the person's GitHub token themselves:
@@ -186,33 +157,19 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 }
 
 func newProvider(cfg OAuthConfig, rootCAs *x509.CertPool, log *slog.Logger) (providers.Provider, error) {
-	redirect := strings.TrimSuffix(cfg.BaseURL, "/") + "/oauth/callback"
-	switch cfg.provider() {
-	case ProviderGoogle:
-		p, err := google.NewProvider(&google.Config{
-			ClientID:     cfg.GoogleClientID,
-			ClientSecret: cfg.GoogleClientSecret,
-			RedirectURL:  redirect,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("oauth: google provider: %w", err)
-		}
-		return p, nil
-	default:
-		p, err := dex.NewProvider(&dex.Config{
-			IssuerURL:      cfg.DexIssuerURL,
-			ClientID:       cfg.DexClientID,
-			ClientSecret:   cfg.DexClientSecret,
-			RedirectURL:    redirect,
-			AllowPrivateIP: cfg.DexAllowPrivateIP,
-			RootCAs:        rootCAs,
-			Logger:         log,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("oauth: dex provider: %w", err)
-		}
-		return p, nil
+	p, err := dex.NewProvider(&dex.Config{
+		IssuerURL:      cfg.DexIssuerURL,
+		ClientID:       cfg.DexClientID,
+		ClientSecret:   cfg.DexClientSecret,
+		RedirectURL:    strings.TrimSuffix(cfg.BaseURL, "/") + "/oauth/callback",
+		AllowPrivateIP: cfg.DexAllowPrivateIP,
+		RootCAs:        rootCAs,
+		Logger:         log,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("oauth: dex provider: %w", err)
 	}
+	return p, nil
 }
 
 // loadRootCAs is the system pool plus the PEM bundle at caFile; (nil, nil)
@@ -389,8 +346,15 @@ func headerQuotedString(s string) string {
 	return strings.NewReplacer(`"`, "", `\`, "").Replace(s)
 }
 
+// bearerToken is the credential of an Authorization: Bearer header, its scheme
+// matched case-insensitively (RFC 9110 §11.1) as mcp-oauth matches it; "" for
+// any other header.
 func bearerToken(r *http.Request) string {
-	return strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	scheme, token, ok := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(token)
 }
 
 // idToken is the caller's IdP token: a forwarded id_token is the bearer

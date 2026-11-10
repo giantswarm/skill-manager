@@ -154,7 +154,6 @@ func (o *serveOptions) serverConfig() (server.Config, error) {
 	}
 	cfg.OAuth = &server.OAuthConfig{
 		BaseURL:                       o.oauthBaseURL,
-		Provider:                      server.ProviderDex,
 		DexIssuerURL:                  o.dexIssuerURL,
 		DexClientID:                   o.dexClientID,
 		DexClientSecret:               o.dexClientSecret,

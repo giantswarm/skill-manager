@@ -149,7 +149,6 @@ func (f *fakeIdP) idToken(t *testing.T, aud []string, exp time.Time) string {
 func (f *fakeIdP) config() OAuthConfig {
 	return OAuthConfig{
 		BaseURL:            "http://localhost:8080",
-		Provider:           ProviderDex,
 		DexIssuerURL:       f.issuer,
 		DexClientID:        "agent-platform",
 		DexClientSecret:    "lab-only",
@@ -168,10 +167,7 @@ func TestOAuthConfigValidation(t *testing.T) {
 	require.Error(t, OAuthConfig{BaseURL: "http://am.example.com", DexIssuerURL: "x", DexClientID: "y", DexClientSecret: "z"}.Validate(), "plain http only on loopback")
 	require.NoError(t, OAuthConfig{BaseURL: "http://localhost:8080", DexIssuerURL: "x", DexClientID: "y", DexClientSecret: "z"}.Validate())
 	require.NoError(t, dexOK.Validate())
-	require.Error(t, OAuthConfig{BaseURL: "https://am.example.com", Provider: ProviderDex}.Validate(), "dex needs issuer + client")
-	require.Error(t, OAuthConfig{BaseURL: "https://am.example.com", Provider: ProviderGoogle, GoogleClientID: "id"}.Validate(), "google needs the secret")
-	require.NoError(t, OAuthConfig{BaseURL: "https://am.example.com", Provider: ProviderGoogle, GoogleClientID: "id", GoogleClientSecret: "s", TrustedAudiences: []string{"id"}}.Validate())
-	require.Error(t, OAuthConfig{BaseURL: "https://am.example.com", Provider: "okta"}.Validate(), "unknown provider")
+	require.Error(t, OAuthConfig{BaseURL: "https://am.example.com"}.Validate(), "dex needs issuer + client")
 	bad := dexOK
 	bad.TrustedAudiences = []string{"agent-platform", " "}
 	require.Error(t, bad.Validate(), "empty audience")
@@ -369,4 +365,19 @@ func TestServerGuardsRESTAndMCPButNotProbes(t *testing.T) {
 
 	token := idp.idToken(t, []string{"agent-platform"}, time.Now().Add(time.Minute))
 	assert.Equal(t, http.StatusOK, status(http.MethodGet, "/v1/sources", token))
+}
+
+func TestBearerTokenMatchesTheSchemeCaseInsensitively(t *testing.T) {
+	for header, want := range map[string]string{
+		"Bearer abc":   "abc",
+		"bearer abc":   "abc",
+		"BEARER  abc ": "abc",
+		"Basic abc":    "",
+		"Bearer":       "",
+		"":             "",
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Authorization", header)
+		assert.Equal(t, want, bearerToken(r), header)
+	}
 }

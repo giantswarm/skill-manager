@@ -33,7 +33,7 @@ type Identity struct {
 	Email string
 	// Name is the display name when the IdP provided one.
 	Name string
-	// Groups are the IdP group claims (Dex `groups`; empty for Google).
+	// Groups are the IdP group claims (Dex `groups`).
 	Groups []string
 	// Source is how the token was validated.
 	Source Source
