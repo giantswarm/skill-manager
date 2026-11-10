@@ -67,6 +67,21 @@ func TestPluginsOf(t *testing.T) {
 			},
 		},
 		{
+			name: "another tool's manifest folder is no package",
+			files: []string{
+				"plugin.json",
+				".claude-plugin/plugin.json",
+				".codex-plugin/plugin.json",
+				".cursor-plugin/plugin.json",
+				"p/.codex-plugin/plugin.json",
+				"skills/keep-the-why/SKILL.md",
+			},
+			skills: []Skill{{Name: "keep-the-why", Path: "skills/keep-the-why"}},
+			want: []Plugin{
+				{Name: "agents", Path: "", Format: FormatAgentPlugins, Skills: []PluginSkill{{Name: "keep-the-why"}}},
+			},
+		},
+		{
 			name:   "plain skills are no plugin",
 			files:  []string{"skills/a/SKILL.md"},
 			skills: []Skill{{Name: "a", Path: "skills/a"}},

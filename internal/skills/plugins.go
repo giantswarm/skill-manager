@@ -66,9 +66,10 @@ func pluginsOf(files []string, skills []Skill, repoName string) []Plugin {
 				formats[root] = FormatClaudeCode
 			}
 		}
-		// .claude-plugin/plugin.json also ends in /plugin.json; its root is
-		// the Claude plugin's, never a .claude-plugin package.
-		if root, ok := manifestRoot(path, agentPluginsManifest); ok && !strings.HasSuffix(root, ".claude-plugin") {
+		// A hidden directory holding a plugin.json (.claude-plugin, and other
+		// tools' .codex-plugin or .cursor-plugin) is a manifest of its parent,
+		// never a package of its own.
+		if root, ok := manifestRoot(path, agentPluginsManifest); ok && !strings.HasPrefix(root[strings.LastIndex(root, "/")+1:], ".") {
 			formats[root] = FormatAgentPlugins
 		}
 	}
