@@ -36,7 +36,7 @@ Per repository: the ref read, the commit it resolved to, the path scanned, readO
 {
   "properties": {
     "refresh": {
-      "description": "Bypass the cache",
+      "description": "Re-read a listing older than 10 seconds instead of serving it from the cache",
       "type": "boolean"
     },
     "source": {

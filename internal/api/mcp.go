@@ -117,7 +117,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags. Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds."),
 		readOnly(),
 		mcp.WithString("source", mcp.Description("Only this repository, any https://github.com/<owner>/<repo>; a configured one keeps its ref and path. Default: every source")),
-		mcp.WithBoolean("refresh", mcp.Description("Bypass the cache")),
+		mcp.WithBoolean("refresh", mcp.Description("Re-read a listing older than 10 seconds instead of serving it from the cache")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := svc.List(ctx, req.GetString("source", ""), req.GetBool("refresh", false))
 		if err != nil {

@@ -29,7 +29,7 @@ var (
 // Lister is skill discovery (skills.Discoverer).
 type Lister interface {
 	// List discovers the skills of every configured source, or of
-	// repository alone; refresh bypasses the cache.
+	// repository alone; refresh re-reads a listing older than 10 seconds.
 	List(ctx context.Context, repository, ref string, refresh bool) (*skills.Result, error)
 	// SourceRef is the ref of the configured source holding path of
 	// repoURL; "" for none or the default branch.
