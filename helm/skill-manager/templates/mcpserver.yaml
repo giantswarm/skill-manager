@@ -1,17 +1,13 @@
-{{- if and .Values.muster.mcpServer.auth.github.enabled (not .Values.oauth.enabled) }}
-{{- fail "muster.mcpServer.auth.github.enabled pins the MCPServer to a GitHub App and forwards the person's ID token beside its user token, which the server validates as an OAuth resource server: set oauth.enabled" }}
-{{- end }}
+{{- $exchange := include "skill-manager.githubTokenExchange" . }}
 {{- if .Values.muster.mcpServer.enabled }}
 {{- /*
 Registers this server with muster. Tools appear as x_<name>_<tool>. With
 oauth.enabled the CR carries the auth block: muster forwards the session's Dex
 id_token (forwardToken), which this server validates against its trusted
 audiences (oauth.trustedAudiences plus the requiredAudiences below), and
-requests the requiredAudiences at login. With muster.mcpServer.auth.github the
-auth pins a GitHub App instead, as agent-manager's does: the bearer is the
-person's App user token, whose login decides about private repositories, and
-forwardIdentity puts the Dex ID token in X-Muster-Id-Token beside it. Without
-OAuth muster connects anonymously.
+requests the requiredAudiences at login. With github.tokenExchange,
+auth.providerApps names its audience, so muster answers grant_required with
+that App's sign-in. Without OAuth muster connects anonymously.
 */}}
 apiVersion: muster.giantswarm.io/v1alpha1
 kind: MCPServer
@@ -41,34 +37,14 @@ spec:
   {{- with .Values.muster.mcpServer.timeout }}
   timeout: {{ . | int }}
   {{- end }}
-  {{- if and .Values.oauth.enabled .Values.muster.mcpServer.auth.github.enabled }}
-  {{- with .Values.muster.mcpServer.auth.github.authorizationServer }}
-  auth:
-    type: oauth
-    authorizationServer:
-      issuer: {{ required "muster.mcpServer.auth.github.authorizationServer.issuer is required with muster.mcpServer.auth.github.enabled" .issuer | quote }}
-      {{- with .expectedIssuer }}
-      expectedIssuer: {{ . | quote }}
-      {{- end }}
-      authorizationEndpoint: {{ .authorizationEndpoint | quote }}
-      tokenEndpoint: {{ .tokenEndpoint | quote }}
-      {{- with .scopes }}
-      scopes: {{ . | quote }}
-      {{- end }}
-      clientCredentialsSecretRef:
-        name: {{ required "muster.mcpServer.auth.github.authorizationServer.clientCredentialsSecretRef.name is required with muster.mcpServer.auth.github.enabled" .clientCredentialsSecretRef.name | quote }}
-        namespace: {{ .clientCredentialsSecretRef.namespace | default $.Release.Namespace | quote }}
-      grantScope: {{ .grantScope | quote }}
-    forwardIdentity: true
-    {{- with $.Values.muster.mcpServer.auth.requiredAudiences }}
-    requiredAudiences:
-      {{- toYaml . | nindent 6 }}
-    {{- end }}
-  {{- end }}
-  {{- else if .Values.oauth.enabled }}
+  {{- if .Values.oauth.enabled }}
   auth:
     type: oauth
     forwardToken: {{ .Values.muster.mcpServer.auth.forwardToken }}
+    {{- if and $exchange .Values.muster.mcpServer.auth.forwardToken }}
+    providerApps:
+      - {{ .Values.github.tokenExchange.audience | quote }}
+    {{- end }}
     {{- with .Values.muster.mcpServer.auth.requiredAudiences }}
     requiredAudiences:
       {{- toYaml . | nindent 6 }}

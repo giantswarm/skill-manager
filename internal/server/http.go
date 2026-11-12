@@ -163,12 +163,12 @@ func origin(rawURL string) string {
 // maxMCPBodyBytes bounds an MCP request body, as the REST API bounds its own.
 const maxMCPBodyBytes = 1 << 20
 
-// guardMCP is guard for the MCP endpoint, where the GitHub App pin applies.
+// guardMCP is guard for the MCP endpoint: the IdP ID token as the bearer.
 func (s *Server) guardMCP(next http.Handler) http.Handler {
 	if s.oauth == nil {
 		return next
 	}
-	return s.oauth.protectMCP(next)
+	return s.oauth.protect(next)
 }
 
 // Handler exposes the mux (tests).

@@ -1,6 +1,6 @@
 # The muster registration: off by default, one streamable-http MCPServer at
-# the Service in the agent-platform tool group, forwarding the Dex token, or
-# pinned to a GitHub App with the ID token beside it.
+# the Service in the agent-platform tool group, forwarding the Dex token and,
+# with the GitHub token exchange, naming its App under providerApps.
 #
 # Run with: make helm-test (helm unittest helm/skill-manager)
 suite: mcpserver registration
@@ -55,36 +55,69 @@ tests:
             requiredAudiences:
               - dex-k8s-authenticator
 
-  - it: pins a GitHub App and forwards the ID token beside it
+  - it: names the token exchange audience as the provider App
     set:
-      muster:
-        mcpServer:
-          auth:
-            github:
-              enabled: true
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+          existingSecret: skill-manager-github-exchange
     asserts:
       - equal:
-          path: spec.auth.forwardIdentity
-          value: true
-      - equal:
-          path: spec.auth.authorizationServer.issuer
-          value: https://github.com/apps/giantswarm-agent-manager
-      - equal:
-          path: spec.auth.authorizationServer.clientCredentialsSecretRef
+          path: spec.auth
           value:
-            name: giantswarm-agent-manager-oauth-client
-            namespace: agent-platform
-      - notExists:
-          path: spec.auth.forwardToken
+            type: oauth
+            forwardToken: true
+            providerApps:
+              - skill-manager-app
+            requiredAudiences:
+              - dex-k8s-authenticator
 
-  - it: refuses the pin without OAuth
+  - it: names no provider App without the token exchange
     set:
-      oauth:
-        enabled: false
+      github:
+        enabled: true
+    asserts:
+      - notExists:
+          path: spec.auth.providerApps
+
+  - it: refuses the token exchange while github.enabled is false
+    set:
+      github:
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+          existingSecret: skill-manager-github-exchange
+    asserts:
+      - failedTemplate:
+          errorMessage: "github.tokenExchange.tokenEndpoint is set while github.enabled is false: set github.enabled to check private repositories as the person"
+
+  - it: accepts and ignores the deprecated GitHub pin values
+    set:
       muster:
         mcpServer:
           auth:
             github:
               enabled: true
+              authorizationServer:
+                issuer: https://github.com/apps/giantswarm-agent-manager
+    asserts:
+      - equal:
+          path: spec.auth
+          value:
+            type: oauth
+            forwardToken: true
+            requiredAudiences:
+              - dex-k8s-authenticator
+
+  - it: refuses an audience muster cannot name a provider App by
+    set:
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: Skill_Manager
+          existingSecret: skill-manager-github-exchange
     asserts:
       - failedTemplate: {}

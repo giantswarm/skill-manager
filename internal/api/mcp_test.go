@@ -2,8 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -91,4 +96,37 @@ func TestMCPResolveSkillsRefusesUnknownFields(t *testing.T) {
 	})
 	assert.True(t, isErr)
 	assert.Contains(t, text, `unknown field "url"`)
+}
+
+func TestToolErrorNamesTheMissingGrant(t *testing.T) {
+	res := toolError(fmt.Errorf("resolve: %w", &catalog.ErrGrantRequired{App: "github", Reason: "grant it"}))
+	require.True(t, res.IsError)
+	require.Len(t, res.Content, 2)
+	require.Equal(t, "grant_required: grant it", res.Content[0].(mcp.TextContent).Text)
+	want := map[string]any{"status": "grant_required", "apps": []any{"github"}, "message": "grant it"}
+	var serialized map[string]any
+	require.NoError(t, json.Unmarshal([]byte(res.Content[1].(mcp.TextContent).Text), &serialized), "the second text block is the structured content")
+	require.Equal(t, want, serialized)
+	raw, err := json.Marshal(res)
+	require.NoError(t, err)
+	var wire struct {
+		StructuredContent map[string]any `json:"structuredContent"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &wire))
+	require.Equal(t, want, wire.StructuredContent)
+}
+
+// A missing grant is 403: the bearer is valid, so a client keeps its token.
+func TestRESTMissingGrantIsForbiddenAndNamesTheApp(t *testing.T) {
+	require.Equal(t, http.StatusForbidden, statusOf(&catalog.ErrGrantRequired{App: "github", Reason: "grant it"}))
+	recorder := httptest.NewRecorder()
+	(&REST{log: slog.New(slog.DiscardHandler)}).writeError(recorder, fmt.Errorf("resolve: %w", &catalog.ErrGrantRequired{App: "skill-manager-app", Reason: "grant it"}))
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Empty(t, recorder.Header().Get("WWW-Authenticate"))
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Equal(t, "grant_required", body["code"])
+	require.Equal(t, []any{"skill-manager-app"}, body["apps"])
+	require.Equal(t, "grant it", body["message"])
+	require.NotContains(t, body, "grantRequired", "grantRequired is the listings' shape")
 }

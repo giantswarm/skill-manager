@@ -1,6 +1,7 @@
 {{- if and .Values.serviceToken.secretName (not .Values.oauth.enabled) }}
 {{- fail "serviceToken.secretName needs oauth.enabled: without it the API admits everyone" }}
 {{- end }}
+{{- $exchange := include "skill-manager.githubTokenExchange" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,9 +78,19 @@ spec:
             {{- if .Values.oauth.allowPublicClientRegistration }}
             - --allow-public-client-registration=true
             {{- end }}
-            {{- if .Values.muster.mcpServer.auth.github.enabled }}
-            - --github-authorization-server={{ .Values.muster.mcpServer.auth.github.authorizationServer.issuer }}
-            - --muster-server={{ .Values.muster.mcpServer.name }}
+            {{- end }}
+            {{- if $exchange }}
+            {{- with .Values.github.tokenExchange }}
+            - --github-token-exchange-endpoint={{ .tokenEndpoint }}
+            - --github-token-exchange-audience={{ .audience }}
+            {{- with .clientID }}
+            - --github-token-exchange-client-id={{ . }}
+            {{- end }}
+            - --github-token-exchange-client-id-file=/etc/skill-manager/github-token-exchange/client-id
+            - --github-token-exchange-client-secret-file=/etc/skill-manager/github-token-exchange/client-secret
+            {{- if .caSecretName }}
+            - --github-token-exchange-ca-file=/etc/skill-manager/github-token-exchange-ca/ca.crt
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.logging.verbose }}
@@ -223,6 +234,16 @@ spec:
               mountPath: /etc/skill-manager/idp-ca
               readOnly: true
             {{- end }}
+            {{- if $exchange }}
+            - name: github-token-exchange
+              mountPath: /etc/skill-manager/github-token-exchange
+              readOnly: true
+            {{- if .Values.github.tokenExchange.caSecretName }}
+            - name: github-token-exchange-ca
+              mountPath: /etc/skill-manager/github-token-exchange-ca
+              readOnly: true
+            {{- end }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -241,6 +262,21 @@ spec:
             items:
               - key: {{ include "skill-manager.oauthDexCASecretKey" . }}
                 path: {{ include "skill-manager.oauthDexCASecretKey" . }}
+        {{- end }}
+        {{- if $exchange }}
+        {{- /* The whole Secret: a missing client-id key does not block the pod. */}}
+        - name: github-token-exchange
+          secret:
+            secretName: {{ include "skill-manager.githubTokenExchangeSecretName" . }}
+            defaultMode: 0440
+        {{- if .Values.github.tokenExchange.caSecretName }}
+        - name: github-token-exchange-ca
+          secret:
+            secretName: {{ .Values.github.tokenExchange.caSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

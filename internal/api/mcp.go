@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/giantswarm/mcp-toolkit/tooldesc"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -34,6 +35,7 @@ const (
 // SourcesResult is list_skill_sources' result and GET /v1/sources' body.
 type SourcesResult struct {
 	Sources []catalog.Source `json:"sources"`
+	catalog.Withheld
 }
 
 // genAIToolName labels the mcp.tools/call server span with the called tool
@@ -107,19 +109,19 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 
 	s.AddTool(mcp.NewTool(ToolListSkillSources,
 		tooldesc.Describe("List the configured skill sources, each with the commit its ref resolves to.",
-			"Per source: url, ref (empty: the default branch), path scanned, readOnly, commit (cached up to the cache TTL); error when it cannot be read or you cannot read it."),
+			"Per source: url, ref (empty: the default branch), path scanned, readOnly, commit (cached up to the cache TTL); error when it cannot be read. Private sources you cannot read are left out, counted in partial, withheld and grantRequired.app."),
 		readOnly(),
 	), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		list, err := svc.Sources(ctx)
+		list, withheld, err := svc.Sources(ctx)
 		if err != nil {
 			return toolError(err), nil
 		}
-		return jsonResult(SourcesResult{Sources: list})
+		return jsonResult(SourcesResult{Sources: list, Withheld: withheld})
 	})
 
 	s.AddTool(mcp.NewTool(ToolListSkills,
 		tooldesc.Describe("List the skills of the configured skill sources, with each source's commit.",
-			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags; per plugin its name, path and format (agent-plugins: root plugin.json, select its skills by name; claude-code: .claude-plugin/plugin.json, loaded whole). Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds."),
+			"Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags; per plugin its name, path and format (agent-plugins: root plugin.json, select its skills by name; claude-code: .claude-plugin/plugin.json, loaded whole). Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds. Private sources you cannot read are left out, counted in partial, withheld and grantRequired.app."),
 		readOnly(),
 		mcp.WithString("source", mcp.Description("Only this repository, any https://github.com/<owner>/<repo>; a configured one keeps its ref and path. Default: every source")),
 		mcp.WithBoolean("refresh", mcp.Description("Re-read a listing older than 10 seconds instead of serving it from the cache")),
@@ -206,8 +208,24 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultStructured(v, string(raw)), nil
 }
 
+// statusGrantRequired is muster's provider App contract: a tool result whose
+// structured status it is names, under apps, the Apps the call needs.
+const statusGrantRequired = "grant_required"
+
 // toolError is a refusal as a tool error: its kind (forbidden, not found,
-// upstream failure, invalid) and the item it names.
+// upstream failure, invalid) and the item it names. A missing provider App
+// grant also carries {"status": "grant_required", "apps": [<app>]} as
+// structured content, which muster answers with the App's sign-in, and that
+// content serialized in a second text block.
 func toolError(err error) *mcp.CallToolResult {
+	if grant, ok := errors.AsType[*catalog.ErrGrantRequired](err); ok {
+		structured := map[string]any{"status": statusGrantRequired, "apps": []string{grant.App}, "message": grant.Reason}
+		res := mcp.NewToolResultError(statusGrantRequired + ": " + grant.Reason)
+		res.StructuredContent = structured
+		if serialized, marshalErr := json.Marshal(structured); marshalErr == nil {
+			res.Content = append(res.Content, mcp.NewTextContent(string(serialized)))
+		}
+		return res
+	}
 	return mcp.NewToolResultError(err.Error())
 }

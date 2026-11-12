@@ -29,16 +29,24 @@ type serveOptions struct {
 	listen  string
 	mcpPath string
 
-	sources       string
-	cacheTTL      time.Duration
-	githubAPIURL  string
-	githubToken   string
-	appID         string
-	appInstall    string
-	appKeyFile    string
+	sources      string
+	cacheTTL     time.Duration
+	githubAPIURL string
+	githubToken  string
+	appID        string
+	appInstall   string
+	appKeyFile   string
+
+	githubExchangeEndpoint   string
+	githubExchangeClient     string
+	githubExchangeClientFile string
+	githubExchangeSecretFile string
+	githubExchangeAudience   string
+	githubExchangeCAFile     string
+	serviceToken             string
+	ociRegistries            string
+
 	githubPinAuth string
-	serviceToken  string
-	ociRegistries string
 	musterServer  string
 
 	oauthEnabled                  bool
@@ -93,15 +101,23 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.mcpPath, "mcp-path", envOr("SKILL_MANAGER_MCP_PATH", "/mcp"), "MCP endpoint path (SKILL_MANAGER_MCP_PATH)")
 	f.StringVar(&o.sources, "sources", envOr("SKILL_MANAGER_SOURCES", ""), "The skill sources: a JSON array of github.com repository URLs and {url, ref, path, readOnly} objects, or comma-separated URLs; ref (branch, tag or commit; empty: the default branch) is what discovery reads and a skill without a ref pins, path the directory scanned, readOnly is reported (SKILL_MANAGER_SOURCES)")
 	f.DurationVar(&o.cacheTTL, "cache-ttl", envDuration(o.envErrs, "cache-ttl", "SKILL_MANAGER_CACHE_TTL", 5*time.Minute), "How long a source's discovered skills are reused (SKILL_MANAGER_CACHE_TTL)")
-	f.StringVar(&o.githubAPIURL, "github-api-url", envOr("SKILL_MANAGER_GITHUB_API_URL", server.DefaultGitHubAPIURL), "GitHub REST API base URL: discovery, pinning and the pin's GET /user (SKILL_MANAGER_GITHUB_API_URL)")
-	f.StringVar(&o.githubToken, "github-token", envOr("GITHUB_TOKEN", ""), "Static GitHub token skills are read with; prefer the environment (GITHUB_TOKEN). Mutually exclusive with the GitHub App")
+	f.StringVar(&o.githubAPIURL, "github-api-url", envOr("SKILL_MANAGER_GITHUB_API_URL", server.DefaultGitHubAPIURL), "GitHub REST API base URL: discovery, pinning, the person's access to a private repository and the forwarded GitHub pair's GET /user (SKILL_MANAGER_GITHUB_API_URL)")
+	f.StringVar(&o.githubToken, "github-token", envOr("GITHUB_TOKEN", ""), "Deprecated: prefer the GitHub App. Static GitHub token skills are read with; prefer the environment (GITHUB_TOKEN). Mutually exclusive with the GitHub App")
 	f.StringVar(&o.appID, "github-app-id", envOr("SKILL_MANAGER_GITHUB_APP_ID", ""), "ID of the read-only GitHub App skills are read with: installation tokens at the App's rate limit (SKILL_MANAGER_GITHUB_APP_ID)")
 	f.StringVar(&o.appInstall, "github-app-installation-id", envOr("SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID", ""), "Installation ID of that App (SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID)")
 	f.StringVar(&o.appKeyFile, "github-app-private-key-file", envOr("SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE", ""), "PEM private key file of that App (SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE)")
-	f.StringVar(&o.githubPinAuth, "github-authorization-server", envOr("SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER", ""), "Issuer identity of the GitHub App muster pins this server's MCP registration to: the bearer is the person's App user token, verified with GET /user, whose login decides about private repositories, and the IdP ID token arrives in "+server.ForwardedIdentityHeader+". Empty: MCP callers have no GitHub login and are refused private repositories. The REST API takes the pair either way (a caller such as agent-manager forwards the person's GitHub token). Needs --enable-oauth (SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER)")
+	f.StringVar(&o.githubExchangeEndpoint, "github-token-exchange-endpoint", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_ENDPOINT", ""), "RFC 8693 token endpoint (muster's broker) that releases the person's user token of skill-manager's GitHub App when a private repository needs it; GitHub then decides, as the person, whether they can read it. Needs --enable-oauth (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_ENDPOINT)")
+	f.StringVar(&o.githubExchangeClient, "github-token-exchange-client-id", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_ID", ""), "Confidential token exchange client ID; empty reads --github-token-exchange-client-id-file (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_ID)")
+	f.StringVar(&o.githubExchangeClientFile, "github-token-exchange-client-id-file", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_ID_FILE", ""), "Mounted confidential client ID file, read at startup when --github-token-exchange-client-id is empty (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_ID_FILE)")
+	f.StringVar(&o.githubExchangeSecretFile, "github-token-exchange-client-secret-file", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_SECRET_FILE", ""), "Mounted confidential client secret file (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_SECRET_FILE)")
+	f.StringVar(&o.githubExchangeAudience, "github-token-exchange-audience", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_AUDIENCE", ""), "RFC 8693 audience that releases the person's grant, also the App named in grant_required answers and listings (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_AUDIENCE)")
+	f.StringVar(&o.githubExchangeCAFile, "github-token-exchange-ca-file", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CA_FILE", ""), "Additional CA bundle for token exchange (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CA_FILE)")
 	f.StringVar(&o.ociRegistries, "oci-registries", envOr("SKILL_MANAGER_OCI_REGISTRIES", strings.Join(oci.DefaultHosts, ",")), "Comma-separated OCI registry hosts (host or host:port) an OCI skill or plugin may come from; no other registry, and none by IP address, is asked. Empty: none (SKILL_MANAGER_OCI_REGISTRIES)")
-	f.StringVar(&o.musterServer, "muster-server", envOr("SKILL_MANAGER_MUSTER_SERVER", "skill-manager"), "This server's MCPServer name in muster, which a refusal names for core_auth_login when --github-authorization-server is set (SKILL_MANAGER_MUSTER_SERVER)")
 	f.StringVar(&o.serviceToken, "service-token", envOr("SKILL_MANAGER_SERVICE_TOKEN", ""), "A bearer the REST API admits as the platform's own service caller, no person: agent-manager's migrate, which has no caller; no readability check applies to it. Prefer the environment (SKILL_MANAGER_SERVICE_TOKEN). Needs --enable-oauth")
+	f.StringVar(&o.githubPinAuth, "github-authorization-server", envOr("SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER", ""), "Ignored: the GitHub App pin is replaced by --github-token-exchange-endpoint (SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER)")
+	f.StringVar(&o.musterServer, "muster-server", envOr("SKILL_MANAGER_MUSTER_SERVER", ""), "Ignored, with --github-authorization-server (SKILL_MANAGER_MUSTER_SERVER)")
+	_ = f.MarkDeprecated("github-authorization-server", "the GitHub App pin is replaced by --github-token-exchange-endpoint")
+	_ = f.MarkDeprecated("muster-server", "the GitHub App pin is replaced by --github-token-exchange-endpoint")
 	f.BoolVar(&o.oauthEnabled, "enable-oauth", envBool(o.envErrs, "enable-oauth", "SKILL_MANAGER_OAUTH_ENABLED", false), "Require an OAuth 2.1 bearer token on the MCP endpoint and the REST API, validated against Dex (mcp-oauth) (SKILL_MANAGER_OAUTH_ENABLED)")
 	f.StringVar(&o.oauthBaseURL, "oauth-base-url", envOr("SKILL_MANAGER_OAUTH_BASE_URL", ""), "Public base URL of this server: the issuer of its OAuth metadata, https or loopback http (SKILL_MANAGER_OAUTH_BASE_URL)")
 	f.StringVar(&o.dexIssuerURL, "dex-issuer-url", envOr("DEX_ISSUER_URL", ""), "Dex issuer URL (DEX_ISSUER_URL)")
@@ -143,8 +159,8 @@ func (o *serveOptions) tokenSource() (skills.TokenSource, error) {
 // serverConfig is the listener's configuration.
 func (o *serveOptions) serverConfig() (server.Config, error) {
 	cfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
-	if o.githubPinAuth != "" && !o.oauthEnabled {
-		return server.Config{}, errors.New("--github-authorization-server needs --enable-oauth: the forwarded IdP ID token is validated by the OAuth resource server")
+	if err := validateGitHubExchange(o); err != nil {
+		return server.Config{}, err
 	}
 	if strings.TrimSpace(o.serviceToken) != "" && !o.oauthEnabled {
 		return server.Config{}, errors.New("--service-token needs --enable-oauth: without it the API admits everyone")
@@ -164,9 +180,6 @@ func (o *serveOptions) serverConfig() (server.Config, error) {
 		AllowPublicClientRegistration: o.allowPublicClientRegistration,
 		GitHubAPIURL:                  o.githubAPIURL,
 		ServiceToken:                  strings.TrimSpace(o.serviceToken),
-	}
-	if o.githubPinAuth != "" {
-		cfg.OAuth.GitHub = &server.GitHubPin{AuthorizationServer: o.githubPinAuth, APIURL: o.githubAPIURL, MusterServer: o.musterServer}
 	}
 	return cfg, nil
 }
@@ -210,11 +223,20 @@ func runServe(ctx context.Context, o *serveOptions) error {
 	// An empty list is no registry, not the defaults.
 	registries := append([]string{}, splitList(o.ociRegistries)...)
 	resolver := skills.NewResolver(o.githubAPIURL, tokens, nil, oci.NewRegistry(registries, nil))
-	if o.githubPinAuth != "" {
-		resolver.WithSignIn(o.musterServer)
-	}
 	svc := catalog.New(discoverer, resolver)
-	log.Info("skill sources configured", "sources", len(sources), "githubApp", o.appID != "", "githubPin", o.githubPinAuth != "")
+	if o.githubExchangeEndpoint != "" {
+		exchange := o.gitHubExchangeConfig()
+		exchange.Logger = log
+		grant, err := server.NewGitHubExchange(exchange)
+		if err != nil {
+			return err
+		}
+		svc.WithGitHubGrant(grant)
+	}
+	for _, warning := range o.deprecations() {
+		log.Warn(warning)
+	}
+	log.Info("skill sources configured", "sources", len(sources), "githubApp", o.appID != "", "githubTokenExchange", o.githubExchangeEndpoint != "")
 
 	srv, err := server.New(srvCfg, api.NewREST(svc, log), api.NewMCPServer(svc, build.Version), log)
 	if err != nil {
@@ -281,4 +303,35 @@ func envDuration(errs map[string]error, flag, key string, def time.Duration) tim
 		return def
 	}
 	return d
+}
+
+func (o *serveOptions) gitHubExchangeConfig() server.GitHubExchangeConfig {
+	return server.GitHubExchangeConfig{TokenEndpoint: o.githubExchangeEndpoint, ClientID: o.githubExchangeClient, ClientIDFile: o.githubExchangeClientFile, ClientSecretFile: o.githubExchangeSecretFile, Audience: o.githubExchangeAudience, CAFile: o.githubExchangeCAFile}
+}
+
+// validateGitHubExchange checks the token exchange options: they need the
+// caller's IdP token, which the OAuth resource server validates.
+func validateGitHubExchange(o *serveOptions) error {
+	if o.githubExchangeEndpoint == "" {
+		if o.githubExchangeClient != "" || o.githubExchangeClientFile != "" || o.githubExchangeSecretFile != "" || o.githubExchangeAudience != "" || o.githubExchangeCAFile != "" {
+			return errors.New("GitHub token exchange options require --github-token-exchange-endpoint")
+		}
+		return nil
+	}
+	if !o.oauthEnabled {
+		return errors.New("GitHub token exchange requires --enable-oauth")
+	}
+	return o.gitHubExchangeConfig().Validate()
+}
+
+// deprecations are the warnings for deprecated options in use.
+func (o *serveOptions) deprecations() []string {
+	var warnings []string
+	if o.githubToken != "" {
+		warnings = append(warnings, "--github-token (GITHUB_TOKEN) is deprecated: read skills with the GitHub App (--github-app-id)")
+	}
+	if o.githubPinAuth != "" || o.musterServer != "" {
+		warnings = append(warnings, "--github-authorization-server and --muster-server are ignored: private repositories are checked as the person with --github-token-exchange-endpoint")
+	}
+	return warnings
 }
