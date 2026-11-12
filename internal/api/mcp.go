@@ -215,11 +215,16 @@ const statusGrantRequired = "grant_required"
 // toolError is a refusal as a tool error: its kind (forbidden, not found,
 // upstream failure, invalid) and the item it names. A missing provider App
 // grant also carries {"status": "grant_required", "apps": [<app>]} as
-// structured content, which muster answers with the App's sign-in.
+// structured content, which muster answers with the App's sign-in, and that
+// content serialized in a second text block.
 func toolError(err error) *mcp.CallToolResult {
 	if grant, ok := errors.AsType[*catalog.ErrGrantRequired](err); ok {
+		structured := map[string]any{"status": statusGrantRequired, "apps": []string{grant.App}, "message": grant.Reason}
 		res := mcp.NewToolResultError(statusGrantRequired + ": " + grant.Reason)
-		res.StructuredContent = map[string]any{"status": statusGrantRequired, "apps": []string{grant.App}, "message": grant.Reason}
+		res.StructuredContent = structured
+		if serialized, marshalErr := json.Marshal(structured); marshalErr == nil {
+			res.Content = append(res.Content, mcp.NewTextContent(string(serialized)))
+		}
 		return res
 	}
 	return mcp.NewToolResultError(err.Error())

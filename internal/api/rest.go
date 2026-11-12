@@ -103,6 +103,8 @@ type errorBody struct {
 	Error string `json:"error"`
 	Item  *int   `json:"item,omitempty"`
 	List  string `json:"list,omitempty"`
+	// Code is grant_required when the refusal is a missing grant.
+	Code string `json:"code,omitempty"`
 	// GrantRequired names the provider App to grant when the refusal is a
 	// missing grant.
 	GrantRequired *catalog.GrantHint `json:"grantRequired,omitempty"`
@@ -116,7 +118,7 @@ func (h *REST) writeError(w http.ResponseWriter, err error) {
 		body.Error, body.Item, body.List = item.Err.Error(), &item.Index, item.List
 	}
 	if grant, ok := errors.AsType[*catalog.ErrGrantRequired](err); ok {
-		body.GrantRequired = &catalog.GrantHint{App: grant.App}
+		body.Code, body.GrantRequired = statusGrantRequired, &catalog.GrantHint{App: grant.App}
 	}
 	status := statusOf(err)
 	if status >= http.StatusInternalServerError {
@@ -125,10 +127,11 @@ func (h *REST) writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, body)
 }
 
-// statusOf is the HTTP status of a catalog error.
+// statusOf is the HTTP status of a catalog error. A missing grant is 403:
+// the bearer is valid, the person's GitHub grant is what is missing.
 func statusOf(err error) int {
 	if _, ok := errors.AsType[*catalog.ErrGrantRequired](err); ok {
-		return http.StatusUnauthorized
+		return http.StatusForbidden
 	}
 	switch {
 	case errors.Is(err, catalog.ErrForbidden):
