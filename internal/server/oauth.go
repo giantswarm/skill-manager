@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/x509"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -269,75 +267,16 @@ func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 	})
 }
 
-// refuse answers a request that is neither a trusted forwarded IdP token nor
-// one of this server's own tokens with 401 and names the cause. The usual one: the bearer is an IdP id_token
-// (a JWT) whose audience is not trusted — the session signed in through a
-// client this server was not told about, the portal's own for instance.
-// mcp-oauth then skipped the forwarded-id_token branch and authenticated the
-// caller through the IdP's userinfo endpoint instead (Dex answers for any
-// token it signed), which is why the caller is known but not SSO and no token
-// is in the local store. The token's aud is read without verification, for
-// the message only: mcp-oauth has authenticated the caller already and the
-// decision — 401 — does not depend on it. muster shows the WWW-Authenticate
-// description in its session hint.
+// refuse answers 401 for a caller mcp-oauth authenticated whose bearer is
+// neither a trusted forwarded IdP token nor one of this server's own tokens
+// with an IdP id_token stored next to it. An id_token for an untrusted
+// audience never gets here; mcp-oauth refuses it and logs its aud next to the
+// trusted audiences.
 func (o *oauthRuntime) refuse(w http.ResponseWriter, r *http.Request, id *identity.Identity) {
-	reason := "the bearer is neither an ID token of a trusted audience nor a token this server issued"
-	attrs := []any{"caller", id.String(), "source", id.Source, "path", r.URL.Path}
-	if aud, ok := untrustedAudience(bearerToken(r), o.cfg.TrustedAudiences); ok {
-		reason = fmt.Sprintf("token audience %v matches none of the trusted audiences %v (--oauth-trusted-audiences)", aud, o.cfg.TrustedAudiences)
-		attrs = append(attrs, "aud", aud, "trustedAudiences", o.cfg.TrustedAudiences)
-	}
-	o.log.Warn("request refused: "+reason, attrs...)
-	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="`+headerQuotedString(reason)+`"`)
+	const reason = "the bearer is neither an ID token of a trusted audience nor a token this server issued"
+	o.log.Warn("request refused: "+reason, "caller", id.String(), "source", id.Source, "path", r.URL.Path)
+	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="`+reason+`"`)
 	writeError(w, http.StatusUnauthorized, "unauthorized: "+reason)
-}
-
-// untrustedAudience is the aud claim of bearer when bearer is a JWT — the
-// shape of an IdP id_token — that names none of trusted: the IdP issued it
-// for other clients. false for opaque bearers, for JWTs without a readable
-// aud, and for tokens that do name a trusted audience (their refusal has
-// another cause).
-func untrustedAudience(bearer string, trusted []string) ([]string, bool) {
-	aud, ok := unverifiedAudience(bearer)
-	if !ok {
-		return nil, false
-	}
-	for _, a := range aud {
-		for _, t := range trusted {
-			if a == t {
-				return nil, false
-			}
-		}
-	}
-	return aud, true
-}
-
-// unverifiedAudience reads the aud claim (a string or a list) of a compact
-// JWS without verifying anything about it.
-func unverifiedAudience(token string) ([]string, bool) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, false
-	}
-	var claims struct {
-		Aud json.RawMessage `json:"aud"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil || len(claims.Aud) == 0 {
-		return nil, false
-	}
-	var one string
-	if json.Unmarshal(claims.Aud, &one) == nil && one != "" {
-		return []string{one}, true
-	}
-	var many []string
-	if json.Unmarshal(claims.Aud, &many) == nil && len(many) > 0 {
-		return many, true
-	}
-	return nil, false
 }
 
 // headerQuotedString makes s safe inside a WWW-Authenticate quoted-string
