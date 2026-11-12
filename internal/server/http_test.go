@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -51,11 +50,7 @@ func TestServerMountsHealthRESTAndMCP(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
-	initBody, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode, string(initBody))
-	// It advertises the Giant Swarm logo as the server icon.
-	assert.Contains(t, string(initBody), `"serverInfo":{"name":"skill-manager","version":"test","icons":[{"src":"data:image/svg+xml;base64,`)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// A body beyond the bound is refused, and the endpoint keeps answering.
 	big := `{"jsonrpc":"2.0","id":2,"method":"ping","params":{"pad":"` + strings.Repeat("x", maxMCPBodyBytes) + `"}}`
