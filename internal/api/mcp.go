@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/giantswarm/mcp-toolkit/brand"
 	"github.com/giantswarm/mcp-toolkit/tooldesc"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpotel "github.com/mark3labs/mcp-go/otel"
@@ -103,6 +104,7 @@ func NewMCPServer(svc *catalog.Service, version string) *mcpserver.MCPServer {
 		mcpotel.WithServerTracingPropagator(otel.Tracer(tracerName), propagation.NewCompositeTextMapPropagator()),
 		mcpserver.WithToolCapabilities(false),
 		mcpserver.WithInstructions("The Agent Platform's skills: the configured skill sources, the skills they hold, and the pins agents mount them by. Private repositories are yours to list and pin only when you can read them on GitHub."),
+		brand.WithGiantSwarmIcon(),
 	)
 
 	s.AddTool(mcp.NewTool(ToolListSkillSources,
