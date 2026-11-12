@@ -93,12 +93,31 @@ tests:
       - failedTemplate:
           errorMessage: "github.tokenExchange.tokenEndpoint is set while github.enabled is false: set github.enabled to check private repositories as the person"
 
-  - it: refuses the removed GitHub pin values
+  - it: accepts and ignores the deprecated GitHub pin values
     set:
       muster:
         mcpServer:
           auth:
             github:
               enabled: true
+              authorizationServer:
+                issuer: https://github.com/apps/giantswarm-agent-manager
+    asserts:
+      - equal:
+          path: spec.auth
+          value:
+            type: oauth
+            forwardToken: true
+            requiredAudiences:
+              - dex-k8s-authenticator
+
+  - it: refuses an audience muster cannot name a provider App by
+    set:
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: Skill_Manager
+          existingSecret: skill-manager-github-exchange
     asserts:
       - failedTemplate: {}

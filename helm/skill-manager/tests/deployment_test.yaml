@@ -61,18 +61,36 @@ tests:
                 - key: private-key
                   path: private-key
 
-  - it: refuses the removed static token
+  - it: reads skills with the deprecated static token from its Secret
     set:
       github:
         tokenSecret:
           name: skills-token
     asserts:
-      - failedTemplate: {}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GITHUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: skills-token
+                key: token
+
+  - it: refuses the App and a token together
+    set:
+      github:
+        app:
+          secretName: skills-app
+        tokenSecret:
+          name: skills-token
+    asserts:
+      - failedTemplate:
+          errorMessage: "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential"
 
   - it: passes the GitHub API URL
     set:
       github:
-        apiURL: https://ghe.example.com/api/v3
+        apiUrl: https://ghe.example.com/api/v3
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args

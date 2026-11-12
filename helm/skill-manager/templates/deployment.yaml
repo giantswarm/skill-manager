@@ -50,9 +50,12 @@ spec:
             - {{ printf "--sources=%s" (toJson .) | quote }}
             {{- end }}
             - --cache-ttl={{ .Values.cacheTTL }}
-            - --github-api-url={{ .Values.github.apiURL }}
+            - --github-api-url={{ .Values.github.apiUrl }}
             - --oci-registries={{ join "," .Values.oci.registries }}
             {{- if .Values.github.app.secretName }}
+            {{- if .Values.github.tokenSecret.name }}
+            {{- fail "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential" }}
+            {{- end }}
             - --github-app-private-key-file=/etc/skill-manager/github-app/private-key
             {{- end }}
             {{- if .Values.oauth.enabled }}
@@ -126,6 +129,13 @@ spec:
                 secretKeyRef:
                   name: {{ . }}
                   key: installation-id
+            {{- end }}
+            {{- with .Values.github.tokenSecret.name }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.github.tokenSecret.key }}
             {{- end }}
             {{- with .Values.observability.otel }}
             {{- if .endpoint }}

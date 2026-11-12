@@ -50,11 +50,15 @@ func TestServeSourcesFlagRefusesOverlaps(t *testing.T) {
 	assert.Contains(t, err.Error(), "overlapping")
 }
 
-// Skills are read with the GitHub App, or anonymously.
+// Skills are read with one credential: the GitHub App, a token, or none.
 func TestServeTokenSource(t *testing.T) {
 	ts, err := parse(t).tokenSource()
 	require.NoError(t, err)
 	assert.Equal(t, skills.StaticToken(""), ts, "anonymous")
+
+	ts, err = parse(t, "--github-token=t0k").tokenSource()
+	require.NoError(t, err)
+	assert.Equal(t, skills.StaticToken("t0k"), ts)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -64,6 +68,20 @@ func TestServeTokenSource(t *testing.T) {
 	ts, err = parse(t, app...).tokenSource()
 	require.NoError(t, err)
 	assert.IsType(t, &skills.App{}, ts)
+
+	_, err = parse(t, append(app, "--github-token=t0k")...).tokenSource()
+	assert.ErrorContains(t, err, "mutually exclusive")
+}
+
+// Deprecated options keep parsing and say what replaces them.
+func TestServeDeprecations(t *testing.T) {
+	assert.Empty(t, parse(t).deprecations())
+	assert.Equal(t, []string{"--github-token (GITHUB_TOKEN) is deprecated: read skills with the GitHub App (--github-app-id)"}, parse(t, "--github-token=t0k").deprecations())
+	o := parse(t, "--github-authorization-server=https://github.com/apps/x", "--muster-server=skill-manager")
+	require.Len(t, o.deprecations(), 1)
+	assert.Contains(t, o.deprecations()[0], "--github-token-exchange-endpoint")
+	_, err := o.serverConfig()
+	require.NoError(t, err, "the ignored pin does not refuse a start")
 }
 
 func TestServeDefaults(t *testing.T) {

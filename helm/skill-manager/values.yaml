@@ -52,7 +52,7 @@ github:
   enabled: false
   # -- GitHub API base URL: discovery, pinning, the person's access to a
   # private repository, and `GET /user` for a forwarded GitHub token.
-  apiURL: https://api.github.com
+  apiUrl: https://api.github.com
   tokenExchange:
     # -- RFC 8693 token endpoint (muster's broker) that releases the
     # person's user token of skill-manager's GitHub App when a private
@@ -65,7 +65,7 @@ github:
     # -- RFC 8693 audience that releases the grant, also the App named in the
     # `grant_required` answer and in the MCPServer's `auth.providerApps`.
     # Required with `tokenEndpoint`.
-    audience: ""
+    audience: ""  # @schema pattern: ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)?$
     # -- Confidential client ID at the broker. Empty: read from the Secret's
     # `client-id` key.
     clientID: ""
@@ -81,9 +81,16 @@ github:
     # -- Existing Secret in the release namespace of skill-manager's
     # read-only GitHub App, with the keys `app-id`, `installation-id` and
     # `private-key` (PEM): skills are discovered and pinned with the App's
-    # installation tokens, at the App's rate limit. Empty: anonymous, public
+    # installation tokens, at the App's rate limit. Mutually exclusive with
+    # `tokenSecret`. Empty (and no `tokenSecret`): anonymous, public
     # repositories only.
     secretName: ""
+  tokenSecret:
+    # -- Deprecated: prefer `app`. Existing Secret in the release namespace
+    # with a static GitHub token skills are read with.
+    name: ""
+    # -- Key of the token in that Secret.
+    key: token
 
 # -- How long a source's discovered skills and head commit are reused. A
 # failed read is retried after 30 seconds and keeps the last good listing.
@@ -197,6 +204,10 @@ muster:
     auth:
       forwardToken: true
       requiredAudiences: []
+      # -- Deprecated and ignored: the GitHub App pin is replaced by
+      # `github.tokenExchange`, which fetches the person's grant only for a
+      # private repository.
+      github: {}  # @schema type: object; additionalProperties: true
 
 networkPolicy:
   # -- Create a Kubernetes NetworkPolicy for the pod.

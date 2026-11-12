@@ -81,7 +81,7 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "apiURL": {
+                "apiUrl": {
                     "type": "string",
                     "description": "GitHub API base URL: discovery, pinning, the person's access to a private repository, and `GET /user` for a forwarded GitHub token."
                 },
@@ -91,7 +91,7 @@
                     "properties": {
                         "secretName": {
                             "type": "string",
-                            "description": "Existing Secret in the release namespace of skill-manager's read-only GitHub App, with the keys `app-id`, `installation-id` and `private-key` (PEM): skills are discovered and pinned with the App's installation tokens, at the App's rate limit. Empty: anonymous, public repositories only."
+                            "description": "Existing Secret in the release namespace of skill-manager's read-only GitHub App, with the keys `app-id`, `installation-id` and `private-key` (PEM): skills are discovered and pinned with the App's installation tokens, at the App's rate limit. Mutually exclusive with `tokenSecret`. Empty (and no `tokenSecret`): anonymous, public repositories only."
                         }
                     }
                 },
@@ -105,7 +105,8 @@
                     "properties": {
                         "audience": {
                             "type": "string",
-                            "description": "RFC 8693 audience that releases the grant, also the App named in the `grant_required` answer and in the MCPServer's `auth.providerApps`. Required with `tokenEndpoint`."
+                            "description": "RFC 8693 audience that releases the grant, also the App named in the `grant_required` answer and in the MCPServer's `auth.providerApps`. Required with `tokenEndpoint`.",
+                            "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)?$"
                         },
                         "caSecretName": {
                             "type": "string",
@@ -126,6 +127,20 @@
                         "tokenEndpoint": {
                             "type": "string",
                             "description": "RFC 8693 token endpoint (muster's broker) that releases the person's user token of skill-manager's GitHub App when a private repository needs it; `GET /repos/{owner}/{repo}` as the person then decides. Listings never ask for it: without the grant they leave out the private sources and name `audience` under `grantRequired`; pinning or reading a private skill answers `grant_required`. Needs `github.enabled` and `oauth.enabled`. Empty: off."
+                        }
+                    }
+                },
+                "tokenSecret": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Key of the token in that Secret."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Deprecated: prefer `app`. Existing Secret in the release namespace with a static GitHub token skills are read with."
                         }
                     }
                 }
@@ -223,6 +238,11 @@
                             "properties": {
                                 "forwardToken": {
                                     "type": "boolean"
+                                },
+                                "github": {
+                                    "type": "object",
+                                    "description": "Deprecated and ignored: the GitHub App pin is replaced by `github.tokenExchange`, which fetches the person's grant only for a private repository.",
+                                    "additionalProperties": true
                                 },
                                 "requiredAudiences": {
                                     "type": "array"
