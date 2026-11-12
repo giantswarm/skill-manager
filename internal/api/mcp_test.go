@@ -126,5 +126,7 @@ func TestRESTMissingGrantIsForbiddenAndNamesTheApp(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
 	require.Equal(t, "grant_required", body["code"])
-	require.Equal(t, map[string]any{"app": "skill-manager-app"}, body["grantRequired"])
+	require.Equal(t, []any{"skill-manager-app"}, body["apps"])
+	require.Equal(t, "grant it", body["message"])
+	require.NotContains(t, body, "grantRequired", "grantRequired is the listings' shape")
 }

@@ -103,11 +103,12 @@ type errorBody struct {
 	Error string `json:"error"`
 	Item  *int   `json:"item,omitempty"`
 	List  string `json:"list,omitempty"`
-	// Code is grant_required when the refusal is a missing grant.
-	Code string `json:"code,omitempty"`
-	// GrantRequired names the provider App to grant when the refusal is a
-	// missing grant.
-	GrantRequired *catalog.GrantHint `json:"grantRequired,omitempty"`
+	// Code, Apps and Message are set only for a missing grant: code
+	// grant_required, the provider Apps (muster's names) the person must
+	// grant, and why.
+	Code    string   `json:"code,omitempty"`
+	Apps    []string `json:"apps,omitempty"`
+	Message string   `json:"message,omitempty"`
 }
 
 func (h *REST) writeError(w http.ResponseWriter, err error) {
@@ -118,7 +119,7 @@ func (h *REST) writeError(w http.ResponseWriter, err error) {
 		body.Error, body.Item, body.List = item.Err.Error(), &item.Index, item.List
 	}
 	if grant, ok := errors.AsType[*catalog.ErrGrantRequired](err); ok {
-		body.Code, body.GrantRequired = statusGrantRequired, &catalog.GrantHint{App: grant.App}
+		body.Code, body.Apps, body.Message = statusGrantRequired, []string{grant.App}, grant.Reason
 	}
 	status := statusOf(err)
 	if status >= http.StatusInternalServerError {
