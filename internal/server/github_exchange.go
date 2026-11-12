@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,6 +31,8 @@ type GitHubExchangeConfig struct {
 	// names.
 	Audience string
 	CAFile   string
+	// Logger records the broker's refusals; nil discards them.
+	Logger *slog.Logger
 }
 
 // Validate checks required fields.
@@ -69,19 +70,12 @@ func NewGitHubExchange(configuration GitHubExchangeConfig) (catalog.GitHubGrant,
 		return catalog.GitHubGrant{}, err
 	}
 	configuration.ClientID = clientID
+	roots, err := loadRootCAs(configuration.CAFile)
+	if err != nil {
+		return catalog.GitHubGrant{}, err
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if configuration.CAFile != "" {
-		pem, err := os.ReadFile(configuration.CAFile) // #nosec G304 -- operator-provided path
-		if err != nil {
-			return catalog.GitHubGrant{}, fmt.Errorf("read CA file %s: %w", configuration.CAFile, err)
-		}
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			roots = x509.NewCertPool()
-		}
-		if !roots.AppendCertsFromPEM(pem) {
-			return catalog.GitHubGrant{}, fmt.Errorf("no CA certificate in %s", configuration.CAFile)
-		}
+	if roots != nil {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	}
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
@@ -93,16 +87,20 @@ func newGitHubExchange(configuration GitHubExchangeConfig, client *http.Client) 
 	// in-cluster broker resolves to a private address: the client checks
 	// only that it is HTTPS.
 	exchanger := oidc.NewTokenExchangeClientWithOptions(oidc.TokenExchangeClientOptions{HTTPClient: client, Logger: slog.New(slog.DiscardHandler), AllowPrivateIP: true})
+	logger := configuration.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	app := configuration.Audience
 	token := func(ctx context.Context) (string, error) {
-		_, ok := identity.FromContext(ctx)
+		person, ok := identity.FromContext(ctx)
 		subjectToken, hasToken := identity.TokenFromContext(ctx)
 		if !ok || !hasToken || subjectToken == "" {
 			return "", fmt.Errorf("%w: a private skill repository needs your verified platform identity to fetch your GitHub authorization", catalog.ErrForbidden)
 		}
-		// A delegated caller (an agent acting for the person) never receives
-		// the person's GitHub grant.
-		if claims, err := oidc.ParseUnverifiedClaims(subjectToken); err != nil || claims["act"] != nil {
+		// A delegated caller, or one whose token cannot show it is not,
+		// never receives the person's GitHub grant.
+		if claims, err := oidc.ParseUnverifiedClaims(subjectToken); err != nil || claims["act"] != nil || person.Delegated {
 			return "", fmt.Errorf("%w: a private skill repository is read with your own GitHub grant, which an agent acting for you does not receive", catalog.ErrForbidden)
 		}
 		secret, err := os.ReadFile(configuration.ClientSecretFile)
@@ -120,14 +118,18 @@ func newGitHubExchange(configuration GitHubExchangeConfig, client *http.Client) 
 		})
 		if err != nil {
 			if refusal, ok := errors.AsType[*oidc.TokenExchangeError](err); ok {
+				logger.Warn("GitHub token exchange refused", "audience", app, "status", refusal.StatusCode, "error", refusal.Code, "description", refusal.Description)
+				// The broker answers a missing grant with invalid_target;
+				// its description is generic, so the code alone decides.
 				if refusal.StatusCode == http.StatusBadRequest && refusal.Code == "invalid_target" {
 					return "", &catalog.ErrGrantRequired{App: app, Reason: fmt.Sprintf("this private skill repository is read with your grant of the GitHub App %s in muster, which you have not given: grant it (core_auth_login app=%s), then call again", app, app)}
 				}
 				return "", errors.New("GitHub authorization service refused the exchange")
 			}
+			logger.Warn("GitHub token exchange failed", "audience", app, "error", err)
 			return "", errors.New("GitHub authorization service is unavailable")
 		}
-		if !strings.EqualFold(result.TokenType, "Bearer") || result.IssuedTokenType != oidc.TokenTypeAccessToken || result.ExpiresIn <= 0 || result.RefreshToken != "" || result.AccessToken == "" {
+		if !strings.EqualFold(result.TokenType, "Bearer") || result.IssuedTokenType != oidc.TokenTypeAccessToken || result.ExpiresIn <= 0 || result.RefreshToken != "" {
 			return "", errors.New("GitHub authorization service returned an invalid access token response")
 		}
 		return result.AccessToken, nil

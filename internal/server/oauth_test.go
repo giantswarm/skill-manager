@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/handler"
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
@@ -329,5 +331,29 @@ func TestBearerTokenMatchesTheSchemeCaseInsensitively(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.Header.Set("Authorization", header)
 		assert.Equal(t, want, bearerToken(r), header)
+	}
+}
+
+// An ID token carrying act marks the caller as delegated, so the person's
+// GitHub grant is never fetched for it.
+func TestAttachIdentityMarksDelegatedCallers(t *testing.T) {
+	o := &oauthRuntime{log: quiet()}
+	for _, scenario := range []struct {
+		token     string
+		delegated bool
+	}{
+		{token: unsignedJWT(`{"sub":"alice"}`)},
+		{token: unsignedJWT(`{"sub":"alice","act":{"sub":"agent"}}`), delegated: true},
+	} {
+		var seen *identity.Identity
+		h := o.attachIdentity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen, _ = identity.FromContext(r.Context())
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/v1/sources", nil)
+		req.Header.Set("Authorization", "Bearer "+scenario.token)
+		req = req.WithContext(handler.ContextWithUserInfo(req.Context(), &providers.UserInfo{ID: "alice", TokenSource: providers.TokenSourceSSO}))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		require.NotNil(t, seen)
+		require.Equal(t, scenario.delegated, seen.Delegated)
 	}
 }

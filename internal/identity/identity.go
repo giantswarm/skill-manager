@@ -38,6 +38,9 @@ type Identity struct {
 	Groups []string
 	// Source is how the token was validated.
 	Source Source
+	// Delegated is set when the caller's ID token carries an `act` claim: an
+	// agent acting for the person, never handed the person's GitHub grant.
+	Delegated bool
 }
 
 // String is the caller as logged and reported on results: the email, else

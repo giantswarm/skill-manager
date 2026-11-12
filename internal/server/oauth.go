@@ -15,6 +15,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 
@@ -234,6 +235,11 @@ func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 		if idToken == "" {
 			o.refuse(w, r, id)
 			return
+		}
+		if claims, err := oidc.ParseUnverifiedClaims(idToken); err == nil {
+			if actor, exists := claims["act"]; exists && actor != nil {
+				id.Delegated = true
+			}
 		}
 		o.log.Debug("authenticated request", "caller", id.String(), "source", id.Source, "path", r.URL.Path)
 		next.ServeHTTP(w, r.WithContext(identity.ContextWithToken(identity.ContextWith(ctx, id), idToken)))

@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,7 +33,7 @@ func unsignedJWT(claims string) string {
 }
 
 func TestGitHubExchange(t *testing.T) {
-	for _, scenario := range []string{"success", "delegated actor", "missing identity token", "no grant", "broker error", "redirect", "invalid token type", "refresh token", "missing expiry"} {
+	for _, scenario := range []string{"success", "delegated actor", "delegated identity", "unparsable token", "missing identity token", "no grant", "broker error", "redirect", "invalid token type", "refresh token", "missing expiry"} {
 		t.Run(scenario, func(t *testing.T) {
 			secretFile := filepath.Join(t.TempDir(), "client-secret")
 			require.NoError(t, os.WriteFile(secretFile, []byte("fixture-secret"), 0o600))
@@ -84,11 +86,14 @@ func TestGitHubExchange(t *testing.T) {
 			defer upstream.Close()
 			client := upstream.Client()
 			client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-			configuration := GitHubExchangeConfig{TokenEndpoint: upstream.URL + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app"}
-			ctx := identity.ContextWith(t.Context(), &identity.Identity{Subject: "alice"})
+			var logs bytes.Buffer
+			configuration := GitHubExchangeConfig{TokenEndpoint: upstream.URL + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app", Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			ctx := identity.ContextWith(t.Context(), &identity.Identity{Subject: "alice", Delegated: scenario == "delegated identity"})
 			switch scenario {
 			case "delegated actor":
 				ctx = identity.ContextWithToken(ctx, delegatedToken)
+			case "unparsable token":
+				ctx = identity.ContextWithToken(ctx, "not-a-jwt")
 			case "missing identity token":
 			default:
 				ctx = identity.ContextWithToken(ctx, personToken)
@@ -113,11 +118,17 @@ func TestGitHubExchange(t *testing.T) {
 				refusal, ok := errors.AsType[*catalog.ErrGrantRequired](err)
 				require.True(t, ok)
 				require.Equal(t, "manager-app", refusal.App)
+				require.Contains(t, logs.String(), "status=400")
+				require.Contains(t, logs.String(), "error=invalid_target")
 			}
-			if scenario == "delegated actor" {
+			if scenario == "broker error" {
+				require.Contains(t, logs.String(), "GitHub token exchange")
+			}
+			switch scenario {
+			case "delegated actor", "delegated identity", "unparsable token":
 				require.ErrorIs(t, err, catalog.ErrForbidden)
-			}
-			if scenario == "missing identity token" || scenario == "delegated actor" {
+				require.Zero(t, exchanges)
+			case "missing identity token":
 				require.Zero(t, exchanges)
 			}
 		})
