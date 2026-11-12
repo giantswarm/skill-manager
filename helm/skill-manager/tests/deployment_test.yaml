@@ -118,3 +118,56 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --oci-registries=gsoci.azurecr.io,gsociprivate.azurecr.io
+
+  - it: fetches the GitHub grant through githubTokenExchange
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+      githubTokenExchange:
+        endpoint: https://muster.example.com/oauth/token
+        clientID: skill-manager
+        audience: skill-manager-github
+        secretName: skill-manager-github-exchange
+        grantApp: github
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-grant-app=github
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-client-secret-file=/etc/skill-manager/github-token-exchange/client-secret
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: github-token-exchange
+            secret:
+              secretName: skill-manager-github-exchange
+              defaultMode: 0440
+              items:
+                - key: client-secret
+                  path: client-secret
+
+  - it: refuses githubTokenExchange without the grant App
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+      githubTokenExchange:
+        endpoint: https://muster.example.com/oauth/token
+        clientID: skill-manager
+        audience: skill-manager-github
+        secretName: skill-manager-github-exchange
+    asserts:
+      - failedTemplate:
+          errorMessage: githubTokenExchange.grantApp is required

@@ -37,9 +37,16 @@ type serveOptions struct {
 	appInstall    string
 	appKeyFile    string
 	githubPinAuth string
-	serviceToken  string
-	ociRegistries string
-	musterServer  string
+
+	githubExchangeEndpoint   string
+	githubExchangeClient     string
+	githubExchangeSecretFile string
+	githubExchangeAudience   string
+	githubExchangeCAFile     string
+	githubGrantApp           string
+	serviceToken             string
+	ociRegistries            string
+	musterServer             string
 
 	oauthEnabled                  bool
 	oauthBaseURL                  string
@@ -98,6 +105,12 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.appID, "github-app-id", envOr("SKILL_MANAGER_GITHUB_APP_ID", ""), "ID of the read-only GitHub App skills are read with: installation tokens at the App's rate limit (SKILL_MANAGER_GITHUB_APP_ID)")
 	f.StringVar(&o.appInstall, "github-app-installation-id", envOr("SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID", ""), "Installation ID of that App (SKILL_MANAGER_GITHUB_APP_INSTALLATION_ID)")
 	f.StringVar(&o.appKeyFile, "github-app-private-key-file", envOr("SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE", ""), "PEM private key file of that App (SKILL_MANAGER_GITHUB_APP_PRIVATE_KEY_FILE)")
+	f.StringVar(&o.githubExchangeEndpoint, "github-token-exchange-endpoint", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_ENDPOINT", ""), "RFC 8693 endpoint (muster's broker) that releases the person's GitHub App user grant when a private repository needs their GitHub login, in place of the App-pinned registration (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_ENDPOINT)")
+	f.StringVar(&o.githubExchangeClient, "github-token-exchange-client-id", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_ID", ""), "Confidential token exchange client ID (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_ID)")
+	f.StringVar(&o.githubExchangeSecretFile, "github-token-exchange-client-secret-file", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_SECRET_FILE", ""), "Mounted confidential client secret file (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CLIENT_SECRET_FILE)")
+	f.StringVar(&o.githubExchangeAudience, "github-token-exchange-audience", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_AUDIENCE", ""), "Broker target that releases the grant of the App --github-grant-app names (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_AUDIENCE)")
+	f.StringVar(&o.githubExchangeCAFile, "github-token-exchange-ca-file", envOr("SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CA_FILE", ""), "Additional CA bundle for token exchange (SKILL_MANAGER_GITHUB_TOKEN_EXCHANGE_CA_FILE)")
+	f.StringVar(&o.githubGrantApp, "github-grant-app", envOr("SKILL_MANAGER_GITHUB_GRANT_APP", ""), "Provider App (muster's aggregator.providerApps name) whose grant the token exchange audience releases, named in grant_required answers and listings; required with --github-token-exchange-endpoint (SKILL_MANAGER_GITHUB_GRANT_APP)")
 	f.StringVar(&o.githubPinAuth, "github-authorization-server", envOr("SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER", ""), "Issuer identity of the GitHub App muster pins this server's MCP registration to: the bearer is the person's App user token, verified with GET /user, whose login decides about private repositories, and the IdP ID token arrives in "+server.ForwardedIdentityHeader+". Empty: MCP callers have no GitHub login and are refused private repositories. The REST API takes the pair either way (a caller such as agent-manager forwards the person's GitHub token). Needs --enable-oauth (SKILL_MANAGER_GITHUB_AUTHORIZATION_SERVER)")
 	f.StringVar(&o.ociRegistries, "oci-registries", envOr("SKILL_MANAGER_OCI_REGISTRIES", strings.Join(oci.DefaultHosts, ",")), "Comma-separated OCI registry hosts (host or host:port) an OCI skill or plugin may come from; no other registry, and none by IP address, is asked. Empty: none (SKILL_MANAGER_OCI_REGISTRIES)")
 	f.StringVar(&o.musterServer, "muster-server", envOr("SKILL_MANAGER_MUSTER_SERVER", "skill-manager"), "This server's MCPServer name in muster, which a refusal names for core_auth_login when --github-authorization-server is set (SKILL_MANAGER_MUSTER_SERVER)")
@@ -145,6 +158,9 @@ func (o *serveOptions) serverConfig() (server.Config, error) {
 	cfg := server.Config{Addr: o.listen, MCPPath: o.mcpPath}
 	if o.githubPinAuth != "" && !o.oauthEnabled {
 		return server.Config{}, errors.New("--github-authorization-server needs --enable-oauth: the forwarded IdP ID token is validated by the OAuth resource server")
+	}
+	if err := validateGitHubExchange(o); err != nil {
+		return server.Config{}, err
 	}
 	if strings.TrimSpace(o.serviceToken) != "" && !o.oauthEnabled {
 		return server.Config{}, errors.New("--service-token needs --enable-oauth: without it the API admits everyone")
@@ -214,6 +230,13 @@ func runServe(ctx context.Context, o *serveOptions) error {
 		resolver.WithSignIn(o.musterServer)
 	}
 	svc := catalog.New(discoverer, resolver)
+	if o.githubExchangeEndpoint != "" {
+		user, err := server.NewGitHubExchange(o.gitHubExchangeConfig())
+		if err != nil {
+			return err
+		}
+		svc.WithGitHubUser(user)
+	}
 	log.Info("skill sources configured", "sources", len(sources), "githubApp", o.appID != "", "githubPin", o.githubPinAuth != "")
 
 	srv, err := server.New(srvCfg, api.NewREST(svc, log), api.NewMCPServer(svc, build.Version), log)
@@ -281,4 +304,23 @@ func envDuration(errs map[string]error, flag, key string, def time.Duration) tim
 		return def
 	}
 	return d
+}
+
+func (o *serveOptions) gitHubExchangeConfig() server.GitHubExchangeConfig {
+	return server.GitHubExchangeConfig{TokenEndpoint: o.githubExchangeEndpoint, ClientID: o.githubExchangeClient, ClientSecretFile: o.githubExchangeSecretFile, Audience: o.githubExchangeAudience, CAFile: o.githubExchangeCAFile, APIURL: o.githubAPIURL, GrantApp: o.githubGrantApp}
+}
+
+// validateGitHubExchange checks the token exchange options: they replace
+// the App-pinned registration and need the caller's IdP token.
+func validateGitHubExchange(o *serveOptions) error {
+	if o.githubExchangeEndpoint == "" {
+		if o.githubExchangeClient != "" || o.githubExchangeSecretFile != "" || o.githubExchangeAudience != "" || o.githubExchangeCAFile != "" || o.githubGrantApp != "" {
+			return errors.New("GitHub token exchange options require --github-token-exchange-endpoint")
+		}
+		return nil
+	}
+	if !o.oauthEnabled || o.githubPinAuth != "" {
+		return errors.New("GitHub token exchange requires OAuth, and replaces the GitHub-pinned MCP registration")
+	}
+	return o.gitHubExchangeConfig().Validate()
 }

@@ -84,7 +84,7 @@ Returns path, size, sha, binary, truncated, and content for a text file of at mo
 ```text
 List the configured skill sources, each with the commit its ref resolves to.
 
-Per source: url, ref (empty: the default branch), path scanned, readOnly, commit (cached up to the cache TTL); error when it cannot be read or you cannot read it.
+Per source: url, ref (empty: the default branch), path scanned, readOnly, commit (cached up to the cache TTL); error when it cannot be read. Private sources you cannot read are left out, counted in partial, withheld and grantRequired.app.
 ```
 
 ```json
@@ -100,7 +100,7 @@ Per source: url, ref (empty: the default branch), path scanned, readOnly, commit
 ```text
 List the skills of the configured skill sources, with each source's commit.
 
-Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags; per plugin its name, path and format (agent-plugins: root plugin.json, select its skills by name; claude-code: .claude-plugin/plugin.json, loaded whole). Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds.
+Per repository: the ref read, the commit it resolved to, the path scanned, readOnly, error, stale; per skill its SKILL.md name, description, repository-relative path and tags; per plugin its name, path and format (agent-plugins: root plugin.json, select its skills by name; claude-code: .claude-plugin/plugin.json, loaded whole). Cached up to the cache TTL; refresh re-reads a listing older than 10 seconds. Private sources you cannot read are left out, counted in partial, withheld and grantRequired.app.
 ```
 
 ```json

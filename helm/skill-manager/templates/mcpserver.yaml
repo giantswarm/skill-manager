@@ -1,6 +1,12 @@
 {{- if and .Values.muster.mcpServer.auth.github.enabled (not .Values.oauth.enabled) }}
 {{- fail "muster.mcpServer.auth.github.enabled pins the MCPServer to a GitHub App and forwards the person's ID token beside its user token, which the server validates as an OAuth resource server: set oauth.enabled" }}
 {{- end }}
+{{- if and .Values.githubTokenExchange.endpoint .Values.muster.mcpServer.auth.github.enabled }}
+{{- fail "githubTokenExchange fetches the person's GitHub grant for private repositories and muster.mcpServer.auth.github pins the registration to the App: set one" }}
+{{- end }}
+{{- if and .Values.githubTokenExchange.endpoint (not .Values.oauth.enabled) }}
+{{- fail "githubTokenExchange exchanges the person's ID token, which the server validates as an OAuth resource server: set oauth.enabled" }}
+{{- end }}
 {{- if .Values.muster.mcpServer.enabled }}
 {{- /*
 Registers this server with muster. Tools appear as x_<name>_<tool>. With
@@ -69,6 +75,10 @@ spec:
   auth:
     type: oauth
     forwardToken: {{ .Values.muster.mcpServer.auth.forwardToken }}
+    {{- if and .Values.githubTokenExchange.endpoint .Values.muster.mcpServer.auth.forwardToken }}
+    providerApps:
+      - {{ .Values.githubTokenExchange.grantApp | quote }}
+    {{- end }}
     {{- with .Values.muster.mcpServer.auth.requiredAudiences }}
     requiredAudiences:
       {{- toYaml . | nindent 6 }}

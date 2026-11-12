@@ -111,6 +111,36 @@
                 }
             }
         },
+        "githubTokenExchange": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "audience": {
+                    "type": "string",
+                    "description": "Broker target that releases the grant of the App `grantApp` names."
+                },
+                "caSecretName": {
+                    "type": "string",
+                    "description": "Optional existing Secret with ca.crt for the broker's private CA."
+                },
+                "clientID": {
+                    "type": "string",
+                    "description": "Confidential broker client ID, allowed to retrieve only that App grant."
+                },
+                "endpoint": {
+                    "type": "string",
+                    "description": "RFC 8693 token endpoint (muster's broker) that releases the person's GitHub App user grant when a private repository needs their GitHub login, in place of the `muster.mcpServer.auth.github` pin. Listings never ask for it: without the grant they leave out the private sources and name `grantApp` under `grantRequired`; pinning or reading a private skill answers `grant_required`. Needs `oauth.enabled`. Empty: off."
+                },
+                "grantApp": {
+                    "type": "string",
+                    "description": "muster's name for the provider App (its `aggregator.providerApps` key) whose grant `audience` releases. The MCPServer lists it under `auth.providerApps`, so muster answers `grant_required` with that App's sign-in link. Required with `endpoint`."
+                },
+                "secretName": {
+                    "type": "string",
+                    "description": "Existing Secret in the release namespace, containing client-secret."
+                }
+            }
+        },
         "global": {
             "type": "object",
             "description": "Global values shared between all subcharts and the platform.",

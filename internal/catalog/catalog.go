@@ -60,6 +60,9 @@ type Pinner interface {
 type Service struct {
 	skills Lister
 	pinner Pinner
+	// gitHubUser fetches the person's grant for a private repository when
+	// the call carries no GitHub login (nil: the pinned registration's only).
+	gitHubUser GitHubUser
 }
 
 // New builds the service.
@@ -80,10 +83,14 @@ type Source struct {
 
 // Sources lists the configured sources, each with the commit its ref
 // resolves to now (cached for the cache TTL), without reading their skills.
-// A private source's commit is shown only to a caller who can read it.
-func (s *Service) Sources(ctx context.Context) ([]Source, error) {
+// A private source is listed only to a caller who can read it; the others
+// are counted in Withheld, without their URLs. Listing never asks for a
+// GitHub grant: without one, Withheld names the App that would show them.
+func (s *Service) Sources(ctx context.Context) ([]Source, Withheld, error) {
 	list := s.skills.Sources()
 	out := make([]Source, len(list))
+	hidden := make([]*withheldEntry, len(list))
+	login := s.lazyLogin()
 	var wg sync.WaitGroup
 	for i, src := range list {
 		out[i] = Source{URL: src.URL, Ref: src.Ref, Path: src.Path, ReadOnly: src.ReadOnly}
@@ -93,8 +100,8 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 			case err != nil:
 				out[i].Error = err.Error()
 			case head.Private && !identity.IsService(ctx):
-				if err := s.pinner.RequireReadable(ctx, src.URL, gitHubLogin(ctx)); err != nil {
-					out[i].Error = err.Error()
+				if err := s.requireReadable(ctx, src.URL, login); err != nil {
+					hidden[i] = withheldFor(err)
 					return
 				}
 				out[i].Commit = head.Commit
@@ -104,22 +111,62 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 		})
 	}
 	wg.Wait()
-	return out, nil
+	var withheld Withheld
+	shown := make([]Source, 0, len(out))
+	for i, src := range out {
+		if hidden[i] != nil {
+			withheld.withhold(hidden[i].grant)
+			continue
+		}
+		shown = append(shown, src)
+	}
+	return shown, withheld, nil
+}
+
+// withheldEntry is a repository a listing leaves out; grant is set when a
+// missing grant is why.
+type withheldEntry struct {
+	grant *ErrGrantRequired
+}
+
+// withheldFor is a private repository a listing leaves out because err kept
+// it from confirming the caller may read it; a missing grant is named, any
+// other cause (a refusal, an unavailable check) is not, so the listing never
+// tells which private repositories exist.
+func withheldFor(err error) *withheldEntry {
+	if grant, ok := errors.AsType[*ErrGrantRequired](err); ok {
+		return &withheldEntry{grant: grant}
+	}
+	return &withheldEntry{}
+}
+
+// Listing is List's answer: the repositories the caller may see and what was
+// withheld.
+type Listing struct {
+	skills.Result
+	Withheld
 }
 
 // List discovers the skills of every configured source, or of source alone
 // (any github.com repository URL; a configured one keeps its ref and path). A
 // private repository is listed only to a caller who can read it (and to the
-// platform's service caller); anyone else gets its URL and why its skills
-// are withheld.
-func (s *Service) List(ctx context.Context, source string, refresh bool) (*skills.Result, error) {
+// platform's service caller). A configured one the caller cannot read is
+// counted in Withheld, without its URL; one the caller named gets its URL
+// and why its skills are withheld. Listing never asks for a GitHub grant.
+func (s *Service) List(ctx context.Context, source string, refresh bool) (*Listing, error) {
 	res, err := s.skills.List(ctx, source, "", refresh)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	out := &skills.Result{Repositories: make([]skills.Repository, 0, len(res.Repositories))}
+	out := &Listing{Result: skills.Result{Repositories: make([]skills.Repository, 0, len(res.Repositories))}}
+	login := s.lazyLogin()
 	for _, repo := range res.Repositories {
-		out.Repositories = append(out.Repositories, s.visible(ctx, repo))
+		shown, entry := s.visible(ctx, repo, login)
+		if entry != nil {
+			out.withhold(entry.grant)
+			continue
+		}
+		out.Repositories = append(out.Repositories, shown)
 	}
 	return out, nil
 }
@@ -130,20 +177,24 @@ func (s *Service) List(ctx context.Context, source string, refresh bool) (*skill
 // named, not a configured one, a missing and an unreadable repository get
 // the same answer: the listing does not tell which private repositories
 // exist.
-func (s *Service) visible(ctx context.Context, repo skills.Repository) skills.Repository {
+func (s *Service) visible(ctx context.Context, repo skills.Repository, login *lazyLogin) (skills.Repository, *withheldEntry) {
 	if identity.IsService(ctx) || (!repo.Private && repo.Error == "") {
-		return repo
+		return repo, nil
 	}
-	err := s.pinner.RequireReadable(ctx, repo.RepoURL, gitHubLogin(ctx))
+	err := s.requireReadable(ctx, repo.RepoURL, login)
 	if err == nil || (!repo.Private && !errors.Is(err, skills.ErrNotReadable) && !errors.Is(err, ErrNotFound)) {
 		// Readable, or public with its own error to show.
-		return repo
+		return repo, nil
+	}
+	configured := s.configured(repo.RepoURL)
+	if configured && repo.Private {
+		return skills.Repository{}, withheldFor(err)
 	}
 	msg := err.Error()
-	if !s.configured(repo.RepoURL) {
+	if !configured {
 		msg = repo.RepoURL + " does not exist or you cannot read it"
 	}
-	return skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: repo.Private, Skills: []skills.Skill{}, Plugins: []skills.Plugin{}, Error: msg, FetchedAt: repo.FetchedAt}
+	return skills.Repository{RepoURL: repo.RepoURL, Ref: repo.Ref, Path: repo.Path, ReadOnly: repo.ReadOnly, Private: repo.Private, Skills: []skills.Skill{}, Plugins: []skills.Plugin{}, Error: msg, FetchedAt: repo.FetchedAt}, nil
 }
 
 // configured reports whether repoURL is a configured source's repository.
@@ -229,7 +280,7 @@ func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
 			l.items[i] = cleaned
 		}
 	}
-	r := &resolution{svc: s, login: gitHubLogin(ctx), service: identity.IsService(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
+	r := &resolution{svc: s, login: s.lazyLogin(), service: identity.IsService(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
 	out := &Request{}
 	var err error
 	if out.Skills, err = r.pin(ctx, "skills", req.Skills); err != nil {
@@ -289,7 +340,7 @@ func validate(it Item, skill bool) (Item, error) {
 // after another.
 type resolution struct {
 	svc     *Service
-	login   string
+	login   *lazyLogin
 	service bool
 
 	heads    map[string]string
@@ -368,7 +419,7 @@ func (r *resolution) requireReadable(ctx context.Context, url string) error {
 	}
 	err, seen := r.readable[url]
 	if !seen {
-		err = r.svc.pinner.RequireReadable(ctx, url, r.login)
+		err = r.svc.requireReadable(ctx, url, r.login)
 		if err != nil {
 			err = classify(err)
 		}
@@ -414,6 +465,9 @@ func (r *resolution) requirePath(ctx context.Context, url, commit, path string) 
 // classify keeps a resolver error's kind and makes every other failure of a
 // reference invalid: one the resolver could not even look up.
 func classify(err error) error {
+	if _, ok := errors.AsType[*ErrGrantRequired](err); ok {
+		return err
+	}
 	switch {
 	case errors.Is(err, skills.ErrNotReadable):
 		return fmt.Errorf("%w: %w", ErrForbidden, err)

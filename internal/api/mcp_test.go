@@ -2,8 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -91,4 +94,18 @@ func TestMCPResolveSkillsRefusesUnknownFields(t *testing.T) {
 	})
 	assert.True(t, isErr)
 	assert.Contains(t, text, `unknown field "url"`)
+}
+
+func TestToolErrorNamesTheMissingGrant(t *testing.T) {
+	res := toolError(fmt.Errorf("resolve: %w", &catalog.ErrGrantRequired{App: "github", Reason: "grant it"}))
+	require.True(t, res.IsError)
+	require.Equal(t, "grant_required: grant it", res.Content[0].(mcp.TextContent).Text)
+	raw, err := json.Marshal(res)
+	require.NoError(t, err)
+	var wire struct {
+		StructuredContent map[string]any `json:"structuredContent"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &wire))
+	require.Equal(t, map[string]any{"status": "grant_required", "apps": []any{"github"}, "message": "grant it"}, wire.StructuredContent)
+	require.Equal(t, http.StatusUnauthorized, statusOf(&catalog.ErrGrantRequired{App: "github", Reason: "grant it"}))
 }

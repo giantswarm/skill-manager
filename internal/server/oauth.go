@@ -258,12 +258,13 @@ func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 		if info.IsSSO() {
 			id.Source = identity.SourceSSO
 		}
-		if o.idToken(ctx, r, info) == "" {
+		idToken := o.idToken(ctx, r, info)
+		if idToken == "" {
 			o.refuse(w, r, id)
 			return
 		}
 		o.log.Debug("authenticated request", "caller", id.String(), "source", id.Source, "path", r.URL.Path)
-		next.ServeHTTP(w, r.WithContext(identity.ContextWith(ctx, id)))
+		next.ServeHTTP(w, r.WithContext(identity.ContextWithToken(identity.ContextWith(ctx, id), idToken)))
 	})
 }
 

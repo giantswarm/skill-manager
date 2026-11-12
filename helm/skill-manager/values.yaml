@@ -43,6 +43,28 @@ global: {}  # @schema type: object; additionalProperties: true
 # needs paths that do not contain each other.
 sources: []  # @schema item: [string, object]; itemRequired: [url]; itemProperties: {url: {type: string, pattern: "^https://github\\.com/[^/]+/[^/]+$"}, ref: {type: string}, path: {type: string}, readOnly: {type: boolean}}
 
+githubTokenExchange:
+  # -- RFC 8693 token endpoint (muster's broker) that releases the person's
+  # GitHub App user grant when a private repository needs their GitHub
+  # login, in place of the `muster.mcpServer.auth.github` pin. Listings never
+  # ask for it: without the grant they leave out the private sources and
+  # name `grantApp` under `grantRequired`; pinning or reading a private
+  # skill answers `grant_required`. Needs `oauth.enabled`. Empty: off.
+  endpoint: ""
+  # -- Confidential broker client ID, allowed to retrieve only that App grant.
+  clientID: ""
+  # -- Broker target that releases the grant of the App `grantApp` names.
+  audience: ""
+  # -- muster's name for the provider App (its `aggregator.providerApps`
+  # key) whose grant `audience` releases. The MCPServer lists it under
+  # `auth.providerApps`, so muster answers `grant_required` with that App's
+  # sign-in link. Required with `endpoint`.
+  grantApp: ""
+  # -- Existing Secret in the release namespace, containing client-secret.
+  secretName: ""
+  # -- Optional existing Secret with ca.crt for the broker's private CA.
+  caSecretName: ""
+
 github:
   # -- GitHub API base URL: discovery, pinning, and `GET /user` for a
   # person's GitHub token.

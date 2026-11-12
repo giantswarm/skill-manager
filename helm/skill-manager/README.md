@@ -23,6 +23,12 @@ Owns the Agent Platform's skill sources, lists their skills and pins skills and 
 | fullnameOverride | string | `""` | Override the fully qualified release name. |
 | global | object | `{}` |  |
 | sources | list | `[]` | The skill sources: each a github.com repository URL or `{url, ref, path, readOnly}`. `ref` is a branch, tag or commit (empty: the default branch): what discovery reads and what a skill of the source without its own ref pins. `path` is the directory scanned (empty: the whole repository). `readOnly` is reported, not enforced. A repository given twice needs paths that do not contain each other. |
+| githubTokenExchange.endpoint | string | `""` | RFC 8693 token endpoint (muster's broker) that releases the person's GitHub App user grant when a private repository needs their GitHub login, in place of the `muster.mcpServer.auth.github` pin. Listings never ask for it: without the grant they leave out the private sources and name `grantApp` under `grantRequired`; pinning or reading a private skill answers `grant_required`. Needs `oauth.enabled`. Empty: off. |
+| githubTokenExchange.clientID | string | `""` | Confidential broker client ID, allowed to retrieve only that App grant. |
+| githubTokenExchange.audience | string | `""` | Broker target that releases the grant of the App `grantApp` names. |
+| githubTokenExchange.grantApp | string | `""` | muster's name for the provider App (its `aggregator.providerApps` key) whose grant `audience` releases. The MCPServer lists it under `auth.providerApps`, so muster answers `grant_required` with that App's sign-in link. Required with `endpoint`. |
+| githubTokenExchange.secretName | string | `""` | Existing Secret in the release namespace, containing client-secret. |
+| githubTokenExchange.caSecretName | string | `""` | Optional existing Secret with ca.crt for the broker's private CA. |
 | github.apiUrl | string | `"https://api.github.com"` | GitHub API base URL: discovery, pinning, and `GET /user` for a person's GitHub token. |
 | github.app.secretName | string | `""` | Existing Secret in the release namespace of the read-only skills GitHub App, with the keys `app-id`, `installation-id` and `private-key` (PEM): skills are discovered and pinned with the App's installation tokens, at the App's rate limit. Mutually exclusive with `tokenSecret`. |
 | github.tokenSecret.name | string | `""` | Existing Secret in the release namespace with a static GitHub token. Prefer `app`. Empty (and no `app`): anonymous, public repositories only. |

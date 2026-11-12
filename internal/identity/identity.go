@@ -56,7 +56,23 @@ type ctxKey int
 const (
 	identityKey ctxKey = iota
 	gitHubKey
+	tokenKey
 )
+
+// ContextWithToken returns ctx carrying the caller's IdP ID token, the
+// subject token of an exchange made for them.
+func ContextWithToken(ctx context.Context, token string) context.Context {
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, tokenKey, token)
+}
+
+// TokenFromContext returns the caller's IdP ID token, if any.
+func TokenFromContext(ctx context.Context) (string, bool) {
+	token, ok := ctx.Value(tokenKey).(string)
+	return token, ok && token != ""
+}
 
 // ContextWith returns ctx carrying id.
 func ContextWith(ctx context.Context, id *Identity) context.Context {

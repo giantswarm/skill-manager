@@ -88,3 +88,31 @@ tests:
               enabled: true
     asserts:
       - failedTemplate: {}
+
+  - it: names the GitHub grant App with githubTokenExchange
+    set:
+      githubTokenExchange:
+        endpoint: https://muster.example.com/oauth/token
+        grantApp: github
+    asserts:
+      - equal:
+          path: spec.auth.forwardToken
+          value: true
+      - equal:
+          path: spec.auth.providerApps
+          value:
+            - github
+
+  - it: refuses githubTokenExchange next to the GitHub pin
+    set:
+      githubTokenExchange:
+        endpoint: https://muster.example.com/oauth/token
+        grantApp: github
+      muster:
+        mcpServer:
+          auth:
+            github:
+              enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "githubTokenExchange fetches the person's GitHub grant for private repositories and muster.mcpServer.auth.github pins the registration to the App: set one"
