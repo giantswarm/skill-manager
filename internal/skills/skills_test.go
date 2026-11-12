@@ -128,7 +128,7 @@ func fakeGitHub(t *testing.T) (*httptest.Server, *int) {
 	// A private repository looks like a missing one to an anonymous caller.
 	// The App's token and alice's user token read it; bob's is not a
 	// collaborator, carol's org enforces SAML, dave's grant is revoked and
-	// erin's hit the rate limit.
+	// erin's hit the rate limit, frank's and gina's the secondary one.
 	mux.HandleFunc("/repos/giantswarm/private-skills", func(w http.ResponseWriter, r *http.Request) {
 		count()
 		switch r.Header.Get("Authorization") {
@@ -141,6 +141,11 @@ func fakeGitHub(t *testing.T) (*httptest.Server, *int) {
 		case "Bearer ghu-erin":
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		case "Bearer ghu-frank":
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, `{"message":"You have exceeded a secondary rate limit"}`, http.StatusForbidden)
+		case "Bearer ghu-gina":
+			http.Error(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`, http.StatusForbidden)
 		default:
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}
@@ -474,9 +479,11 @@ func TestRequireReadableAsAsksGitHubAsThePerson(t *testing.T) {
 	}
 	require.ErrorIs(t, r.RequireReadableAs(ctx, private, ""), ErrNotReadable, "no grant, no access")
 	require.ErrorIs(t, r.RequireReadableAs(ctx, private, "ghu-dave"), ErrUserTokenRefused)
-	err := r.RequireReadableAs(ctx, private, "ghu-erin")
-	require.ErrorIs(t, err, ErrUpstream, "a rate limit is not a refusal")
-	require.NotErrorIs(t, err, ErrNotReadable)
+	for _, token := range []string{"ghu-erin", "ghu-frank", "ghu-gina"} {
+		err := r.RequireReadableAs(ctx, private, token)
+		require.ErrorIs(t, err, ErrUpstream, "%s: a rate limit is not a refusal", token)
+		require.NotErrorIs(t, err, ErrNotReadable, token)
+	}
 
 	before := *hits
 	require.NoError(t, r.RequireReadableAs(ctx, private, "ghu-alice"))
@@ -484,6 +491,8 @@ func TestRequireReadableAsAsksGitHubAsThePerson(t *testing.T) {
 	assert.Equal(t, before, *hits, "answers are cached per token")
 	require.ErrorIs(t, r.RequireReadableAs(ctx, private, "ghu-dave"), ErrUserTokenRefused)
 	assert.Equal(t, before+1, *hits, "a refused token is asked again")
+	require.ErrorIs(t, r.RequireReadableAs(ctx, private, "ghu-frank"), ErrUpstream)
+	assert.Equal(t, before+2, *hits, "a rate limit is asked again")
 }
 
 // A public repository is readable without asking GitHub as the person.

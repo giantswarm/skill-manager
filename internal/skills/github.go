@@ -182,8 +182,7 @@ type apiError struct {
 	status int
 	target string
 	body   string
-	// rateLimited is a 429, or a 403 with no requests left: GitHub's limit,
-	// not the caller's access.
+	// rateLimited is a GitHub rate limit, not the caller's access.
 	rateLimited bool
 }
 
@@ -224,8 +223,8 @@ func (g *github) send(ctx context.Context, method, target, accept, token string)
 		return nil, fmt.Errorf("%s %s: %w", method, target, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		limited := resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0")
-		return nil, &apiError{status: resp.StatusCode, target: target, body: strings.TrimSpace(firstLine(string(body))), rateLimited: limited}
+		message := strings.TrimSpace(firstLine(string(body)))
+		return nil, &apiError{status: resp.StatusCode, target: target, body: message, rateLimited: rateLimited(resp, message)}
 	}
 	return body, nil
 }
@@ -242,4 +241,16 @@ func firstLine(s string) string {
 		s = s[:maxErrorBody]
 	}
 	return s
+}
+
+// rateLimited reports a GitHub rate limit: a 429, or a 403 with no requests
+// left, a Retry-After header (the secondary limit) or a rate limit message.
+func rateLimited(resp *http.Response, message string) bool {
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return true
+	case resp.StatusCode != http.StatusForbidden:
+		return false
+	}
+	return resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != "" || strings.Contains(strings.ToLower(message), "rate limit")
 }

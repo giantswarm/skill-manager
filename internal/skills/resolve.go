@@ -281,7 +281,7 @@ func (r *Resolver) unresolvable(ctx context.Context, repoURL, what string, err e
 	switch {
 	case errors.As(err, &api) && api.status == http.StatusNotFound:
 		if token, _ := r.gh.tokens.Token(ctx); token == "" {
-			return fmt.Errorf("%w: %w: %s of %s could not be resolved: GitHub answered 404 without a token — the repository is private or does not exist; a private skill repository needs the skills GitHub App installed on it", ErrUnresolvable, ErrNotFound, what, repoURL)
+			return fmt.Errorf("%w: %w: %s of %s could not be resolved: GitHub answered 404 without a token — the repository is private or does not exist; a private skill repository needs the skills GitHub App installed on it (or a GITHUB_TOKEN that can read it)", ErrUnresolvable, ErrNotFound, what, repoURL)
 		}
 		return fmt.Errorf("%w: %w: %s of %s could not be resolved: GitHub answered 404 — the repository does not exist, the ref is unknown, or the skills GitHub App is not installed on it", ErrUnresolvable, ErrNotFound, what, repoURL)
 	case errors.As(err, &api) && api.status == http.StatusUnprocessableEntity:
