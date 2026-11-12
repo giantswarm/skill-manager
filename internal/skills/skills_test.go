@@ -126,13 +126,24 @@ func fakeGitHub(t *testing.T) (*httptest.Server, *int) {
 		}
 	})
 	// A private repository looks like a missing one to an anonymous caller.
+	// The App's token and alice's user token read it; bob's is not a
+	// collaborator, carol's org enforces SAML, dave's grant is revoked and
+	// erin's hit the rate limit.
 	mux.HandleFunc("/repos/giantswarm/private-skills", func(w http.ResponseWriter, r *http.Request) {
 		count()
-		if r.Header.Get("Authorization") == "" {
+		switch r.Header.Get("Authorization") {
+		case "Bearer secret", "Bearer ghu-alice":
+			_ = json.NewEncoder(w).Encode(map[string]any{"default_branch": "trunk", "private": true})
+		case "Bearer ghu-carol":
+			http.Error(w, `{"message":"Resource protected by organization SAML enforcement"}`, http.StatusForbidden)
+		case "Bearer ghu-dave":
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		case "Bearer ghu-erin":
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		default:
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
-			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"default_branch": "trunk", "private": true})
 	})
 	mux.HandleFunc("/repos/giantswarm/private-skills/collaborators/", func(w http.ResponseWriter, r *http.Request) {
 		count()
@@ -438,15 +449,49 @@ func TestRequireReadableGatesPrivateRepositoriesOnThePerson(t *testing.T) {
 	err := r.RequireReadable(ctx, private, "")
 	require.ErrorIs(t, err, ErrNotReadable, "an unknown person cannot be checked, so a private repository is refused")
 	assert.Contains(t, err.Error(), "you cannot read")
-	assert.NotContains(t, err.Error(), "core_auth_login", "no sign-in to suggest without the GitHub pin")
-	err = NewResolver(ts.URL, StaticToken("secret"), nil, nil).WithSignIn("skill-manager").RequireReadable(ctx, private, "")
-	require.ErrorIs(t, err, ErrNotReadable)
-	assert.Contains(t, err.Error(), "core_auth_login server=skill-manager", "with the pin, how to connect")
 
 	before := *hits
 	require.NoError(t, r.RequireReadable(ctx, private, "Alice"), "logins are case-insensitive")
 	require.ErrorIs(t, r.RequireReadable(ctx, private, "bob"), ErrNotReadable)
 	assert.Equal(t, before, *hits, "answers are cached")
+}
+
+// GitHub decides, as the person, whether they can read a private
+// repository: 200 is readable, 404 and 403 are not, 401 is a grant GitHub no
+// longer accepts, and a rate limit is GitHub's failure, not a refusal.
+func TestRequireReadableAsAsksGitHubAsThePerson(t *testing.T) {
+	ts, hits := fakeGitHub(t)
+	r := NewResolver(ts.URL, StaticToken("secret"), nil, nil)
+	ctx := t.Context()
+	private := "https://github.com/giantswarm/private-skills"
+
+	require.NoError(t, r.RequireReadableAs(ctx, private, "ghu-alice"), "200 as the person: readable")
+	for _, token := range []string{"ghu-bob", "ghu-carol"} {
+		err := r.RequireReadableAs(ctx, private, token)
+		require.ErrorIs(t, err, ErrNotReadable, token)
+		assert.Contains(t, err.Error(), private)
+		assert.NotContains(t, err.Error(), token, "the token never reaches a message")
+	}
+	require.ErrorIs(t, r.RequireReadableAs(ctx, private, ""), ErrNotReadable, "no grant, no access")
+	require.ErrorIs(t, r.RequireReadableAs(ctx, private, "ghu-dave"), ErrUserTokenRefused)
+	err := r.RequireReadableAs(ctx, private, "ghu-erin")
+	require.ErrorIs(t, err, ErrUpstream, "a rate limit is not a refusal")
+	require.NotErrorIs(t, err, ErrNotReadable)
+
+	before := *hits
+	require.NoError(t, r.RequireReadableAs(ctx, private, "ghu-alice"))
+	require.ErrorIs(t, r.RequireReadableAs(ctx, private, "ghu-bob"), ErrNotReadable)
+	assert.Equal(t, before, *hits, "answers are cached per token")
+	require.ErrorIs(t, r.RequireReadableAs(ctx, private, "ghu-dave"), ErrUserTokenRefused)
+	assert.Equal(t, before+1, *hits, "a refused token is asked again")
+}
+
+// A public repository is readable without asking GitHub as the person.
+func TestRequireReadableAsNeverSendsTheUserTokenForAPublicRepository(t *testing.T) {
+	ts, _ := fakeGitHub(t)
+	r := NewResolver(ts.URL, StaticToken("secret"), nil, nil)
+	// The fake asserts the App's token on every agent-skills request.
+	require.NoError(t, r.RequireReadableAs(t.Context(), "https://github.com/giantswarm/agent-skills", "ghu-alice"))
 }
 
 func TestAppMintsAndRenewsInstallationTokens(t *testing.T) {

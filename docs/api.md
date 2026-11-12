@@ -6,8 +6,8 @@ The MCP tools' semantics over HTTP ([tools.md](tools.md)), on the same port (808
 
 With `oauth.enabled`, every call carries one of:
 
-- the person's Dex ID token as the bearer (the portal, agent-manager): no GitHub login, so private repositories are refused, unless `githubTokenExchange` is set: then a private repository fetches the person's GitHub App grant from muster's RFC 8693 broker, and its login opens the private repositories the person can read;
-- the person's GitHub user token as the bearer and their ID token in `X-Muster-Id-Token` (agent-manager on its GitHub registration, muster on a pinned one): the token's login (`GET /user`) opens the private repositories the person can read;
+- the person's Dex ID token as the bearer (the portal, agent-manager, muster): private repositories are refused unless `github.tokenExchange` is set; then, for a private repository only, the person's user token of skill-manager's GitHub App is fetched from muster's RFC 8693 broker and GitHub decides as the person: `GET /repos/{owner}/{repo}` with that token answers `200` (readable) or `404`/`403` (not readable). A public repository never fetches it;
+- deprecated: the person's GitHub user token as the bearer and their ID token in `X-Muster-Id-Token` (agent-manager on its GitHub registration): the token's login (`GET /user`) opens the private repositories it has read permission on;
 - on `POST /v1/resolve` only, the service token (`serviceToken`): the platform's own caller, for agent-manager's `migrate`; no readability check.
 
 Anything else is `401`. The ID token is validated before GitHub is asked about a GitHub token; GitHub failing that check (its rate limit included) is `502`. Every refusal is a JSON `{"error": "..."}`.
@@ -27,7 +27,7 @@ Anything else is `401`. The ID token is validated before GitHub is asked about a
 
 A plugin is a directory with a root `plugin.json` (`format: agent-plugins`, an Agent Plugins package; `skills` are the skills directly under its `skills/`, which an agent selects by name) or a `.claude-plugin/plugin.json` (`format: claude-code`, loaded whole; `skills` is empty). A directory with both is `agent-plugins`. A hidden directory (`.claude-plugin`, `.codex-plugin`, `.cursor-plugin`) is its parent's manifest, never a package.
 
-A configured private repository the caller cannot read, or cannot yet (no GitHub grant), is left out of both listings, never named: `partial: true` and `withheld` count them, `grantRequired.app` names the provider App to grant when a missing grant left any out, and `note` says the same in words. A listing never answers a missing grant with `401`.
+A configured private repository the caller cannot read, or cannot yet (no GitHub grant), is left out of both listings, never named: `partial: true` and `withheld` count them, `grantRequired.app` names the App to grant (`github.tokenExchange.audience`) when a missing grant left any out, and `note` says the same in words. A listing never answers a missing grant with `401`.
 
 `GET /v1/skills/content` and `/content/file` read one skill at a full commit id (`400` otherwise), below a configured source (`400` otherwise), a private repository only for a caller who can read it (`403`; without the person's GitHub grant, `401` with `grantRequired: {app}`, and the MCP tool answers `{"status": "grant_required", "apps": [app]}`). `instructions` is the SKILL.md body below the frontmatter. `files` lists the skill directory, SKILL.md first, at most 200 (`filesTruncated`); a file below a nested SKILL.md is that skill's. A file must be one of the skill's files, listed or past the cap (`404` otherwise); `content` is set only for a UTF-8 text file of at most 512 KiB (`binary` by extension, a NUL byte in the first 8000 bytes or invalid UTF-8; `truncated` past the size). At most four reads go to GitHub at once; a read that waits more than 30 seconds is a `502`. A skill at a commit is cached, a missing one for 5 minutes; a file is read from GitHub on each call.
 
@@ -41,7 +41,7 @@ A configured private repository the caller cannot read, or cannot yet (no GitHub
 
 - A git item is pinned to its ref's commit: `git.commit` set, `git.ref` dropped. No ref: the ref of the configured source whose `path` holds the item's `path`, else the default branch. A `commit` instead of a ref is kept.
 - An OCI item is pinned to `oci.ref` `<repository>@sha256:<digest>`; a given digest is kept, its tag dropped.
-- The person-can-read check runs inside: every git repository must be readable by the caller (public, or the GitHub login has read access). No separate check is needed.
+- The person-can-read check runs inside: every git repository must be readable by the caller (public, or GitHub lets the person read it). No separate check is needed. A private repository without the person's grant is `401` with `grantRequired: {app}`.
 - `path` is cleaned (`./a//b/` is `a/b`, `.` is the root) and returned cleaned; an absolute path or one with `..` is refused.
 - The item's `path` must exist at the commit; a commit, given or as the ref, must exist.
 - An OCI item must come from an allowed registry (`oci.registries`), also one given by digest.

@@ -31,11 +31,11 @@ func unsignedJWT(claims string) string {
 }
 
 func TestGitHubExchange(t *testing.T) {
-	for _, scenario := range []string{"success", "delegated actor", "missing identity token", "no grant", "broker error", "redirect", "invalid token type", "refresh token", "missing expiry", "GitHub refuses"} {
+	for _, scenario := range []string{"success", "delegated actor", "missing identity token", "no grant", "broker error", "redirect", "invalid token type", "refresh token", "missing expiry"} {
 		t.Run(scenario, func(t *testing.T) {
 			secretFile := filepath.Join(t.TempDir(), "client-secret")
 			require.NoError(t, os.WriteFile(secretFile, []byte("fixture-secret"), 0o600))
-			exchanges, verifications := 0, 0
+			exchanges := 0
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/token" {
@@ -78,21 +78,13 @@ func TestGitHubExchange(t *testing.T) {
 					require.NoError(t, json.NewEncoder(w).Encode(result)) // #nosec G117 -- the fixture is a token endpoint
 					return
 				}
-				require.Equal(t, "/user", r.URL.Path, "credentials must never follow a redirect")
-				verifications++
-				require.Empty(t, r.Header.Get("X-Muster-Id-Token"))
-				require.Equal(t, "Bearer fixture-user-grant", r.Header.Get("Authorization"))
-				if scenario == "GitHub refuses" {
-					w.WriteHeader(http.StatusUnauthorized)
-					return
-				}
-				_, _ = fmt.Fprint(w, `{"login":"alice"}`)
+				t.Errorf("unexpected request %s: credentials never follow a redirect", r.URL.Path)
 			})
 			upstream := httptest.NewTLSServer(handler)
 			defer upstream.Close()
 			client := upstream.Client()
 			client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-			configuration := GitHubExchangeConfig{TokenEndpoint: upstream.URL + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app", APIURL: upstream.URL, GrantApp: "github"}
+			configuration := GitHubExchangeConfig{TokenEndpoint: upstream.URL + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app"}
 			ctx := identity.ContextWith(t.Context(), &identity.Identity{Subject: "alice"})
 			switch scenario {
 			case "delegated actor":
@@ -101,26 +93,26 @@ func TestGitHubExchange(t *testing.T) {
 			default:
 				ctx = identity.ContextWithToken(ctx, personToken)
 			}
-			resolve := newGitHubExchange(configuration, client)
-			result, err := resolve(ctx)
+			grant := newGitHubExchange(configuration, client)
+			require.Equal(t, "manager-app", grant.App, "the audience is the App grant_required names")
+			result, err := grant.Token(ctx)
 			if scenario == "success" {
 				require.NoError(t, err)
-				require.Equal(t, &identity.GitHub{Login: "alice", Token: "fixture-user-grant"}, result) // #nosec G101 -- synthetic broker response
-				_, err = resolve(ctx)
+				require.Equal(t, "fixture-user-grant", result) // #nosec G101 -- synthetic broker response
+				_, err = grant.Token(ctx)
 				require.NoError(t, err)
-				require.Equal(t, 2, exchanges)
-				require.Equal(t, 2, verifications, "user grants are not cached")
+				require.Equal(t, 2, exchanges, "user grants are not cached")
 				return
 			}
 			require.Error(t, err)
-			require.Nil(t, result)
+			require.Empty(t, result)
 			for _, value := range []string{personToken, "fixture-secret", "fixture-user-grant", "fixture-refresh"} {
 				require.NotContains(t, err.Error(), value)
 			}
-			if scenario == "no grant" || scenario == "GitHub refuses" {
-				grant, ok := errors.AsType[*catalog.ErrGrantRequired](err)
+			if scenario == "no grant" {
+				refusal, ok := errors.AsType[*catalog.ErrGrantRequired](err)
 				require.True(t, ok)
-				require.Equal(t, "github", grant.App)
+				require.Equal(t, "manager-app", refusal.App)
 			}
 			if scenario == "delegated actor" {
 				require.ErrorIs(t, err, catalog.ErrForbidden)
@@ -133,7 +125,7 @@ func TestGitHubExchange(t *testing.T) {
 }
 
 func TestGitHubExchangeConfiguration(t *testing.T) {
-	valid := GitHubExchangeConfig{TokenEndpoint: "https://broker.example.com/oauth/token", ClientID: "manager", ClientSecretFile: "/mounted/client-secret", Audience: "manager-app", GrantApp: "github"} // #nosec G101 -- configuration fixture with a path, no secret value
+	valid := GitHubExchangeConfig{TokenEndpoint: "https://broker.example.com/oauth/token", ClientID: "manager", ClientSecretFile: "/mounted/client-secret", Audience: "manager-app"} // #nosec G101 -- configuration fixture with a path, no secret value
 	require.NoError(t, valid.Validate())
 	for _, endpoint := range []string{"http://broker.example.com/token", "https://user:password@broker.example.com/token", "https://broker.example.com/token?credential=value", "https://broker.example.com/token#fragment", "/token"} {
 		configuration := valid
@@ -144,6 +136,26 @@ func TestGitHubExchangeConfiguration(t *testing.T) {
 	configuration.ClientSecretFile = ""
 	require.Error(t, configuration.Validate())
 	configuration = valid
-	configuration.GrantApp = ""
+	configuration.Audience = ""
 	require.Error(t, configuration.Validate())
+	configuration = valid
+	configuration.ClientID, configuration.ClientIDFile = "", "/mounted/client-id"
+	require.NoError(t, configuration.Validate(), "the client ID may come from a file")
+	configuration.ClientIDFile = ""
+	require.Error(t, configuration.Validate())
+}
+
+// The client ID flag wins; without it the mounted file is read at startup,
+// and neither fails the start.
+func TestGitHubExchangeClientID(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "client-id")
+	require.NoError(t, os.WriteFile(file, []byte("from-file\n"), 0o600))
+	id, err := GitHubExchangeConfig{ClientID: "from-flag", ClientIDFile: file}.resolveClientID()
+	require.NoError(t, err)
+	require.Equal(t, "from-flag", id)
+	id, err = GitHubExchangeConfig{ClientIDFile: file}.resolveClientID()
+	require.NoError(t, err)
+	require.Equal(t, "from-file", id)
+	_, err = GitHubExchangeConfig{ClientIDFile: filepath.Join(t.TempDir(), "absent")}.resolveClientID()
+	require.Error(t, err)
 }

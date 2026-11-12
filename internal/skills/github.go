@@ -89,6 +89,13 @@ func (g *github) permission(ctx context.Context, owner, repo, login string) (str
 	return out.Permission, nil
 }
 
+// readableBy asks GitHub whether the holder of userToken can read the
+// repository: GET /repos/{owner}/{repo} as them answers 200 when they can.
+func (g *github) readableBy(ctx context.Context, owner, repo, userToken string) error {
+	_, err := g.send(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s", g.apiURL, owner, repo), "application/vnd.github+json", userToken)
+	return err
+}
+
 // head resolves ref to the commit it points at right now: empty is the
 // default branch (read from meta, else from the repository), a branch or a
 // tag its head, a commit id itself, once GitHub confirms it exists. The one
@@ -175,6 +182,9 @@ type apiError struct {
 	status int
 	target string
 	body   string
+	// rateLimited is a 429, or a 403 with no requests left: GitHub's limit,
+	// not the caller's access.
+	rateLimited bool
 }
 
 func (e *apiError) Error() string {
@@ -186,16 +196,21 @@ func (g *github) get(ctx context.Context, target, accept string) ([]byte, error)
 }
 
 func (g *github) do(ctx context.Context, method, target, accept string) ([]byte, error) {
+	token, err := g.tokens.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return g.send(ctx, method, target, accept, token)
+}
+
+// send is one request authenticated with token ("" for anonymous).
+func (g *github) send(ctx context.Context, method, target, accept, token string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	token, err := g.tokens.Token(ctx)
-	if err != nil {
-		return nil, err
-	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -209,7 +224,8 @@ func (g *github) do(ctx context.Context, method, target, accept string) ([]byte,
 		return nil, fmt.Errorf("%s %s: %w", method, target, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &apiError{status: resp.StatusCode, target: target, body: strings.TrimSpace(firstLine(string(body)))}
+		limited := resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0")
+		return nil, &apiError{status: resp.StatusCode, target: target, body: strings.TrimSpace(firstLine(string(body))), rateLimited: limited}
 	}
 	return body, nil
 }

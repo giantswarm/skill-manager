@@ -1,5 +1,5 @@
-# The Deployment: the sources as one JSON flag, one GitHub credential, OAuth
-# with the GitHub pin, and the service token.
+# The Deployment: the sources as one JSON flag, the GitHub App, OAuth, the
+# GitHub token exchange, and the service token.
 #
 # Run with: make helm-test (helm unittest helm/skill-manager)
 suite: deployment
@@ -61,18 +61,24 @@ tests:
                 - key: private-key
                   path: private-key
 
-  - it: refuses the App and a token together
+  - it: refuses the removed static token
     set:
       github:
-        app:
-          secretName: skills-app
         tokenSecret:
           name: skills-token
     asserts:
-      - failedTemplate:
-          errorMessage: "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential"
+      - failedTemplate: {}
 
-  - it: with OAuth, the GitHub pin and the service token
+  - it: passes the GitHub API URL
+    set:
+      github:
+        apiURL: https://ghe.example.com/api/v3
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-api-url=https://ghe.example.com/api/v3
+
+  - it: with OAuth and the service token
     set:
       oauth:
         enabled: true
@@ -82,18 +88,13 @@ tests:
         identity:
           issuerUrl: https://dex.example.com
           clientId: platform-client
-      muster:
-        mcpServer:
-          auth:
-            github:
-              enabled: true
       serviceToken:
         secretName: skill-manager-service
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --enable-oauth=true
-      - contains:
+      - notContains:
           path: spec.template.spec.containers[0].args
           content: --github-authorization-server=https://github.com/apps/giantswarm-agent-manager
       - contains:
@@ -119,7 +120,7 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --oci-registries=gsoci.azurecr.io,gsociprivate.azurecr.io
 
-  - it: fetches the GitHub grant through githubTokenExchange
+  - it: fetches the GitHub grant through the token exchange, the whole Secret mounted
     set:
       oauth:
         enabled: true
@@ -129,19 +130,32 @@ tests:
         identity:
           issuerUrl: https://dex.example.com
           clientId: platform-client
-      githubTokenExchange:
-        endpoint: https://muster.example.com/oauth/token
-        clientID: skill-manager
-        audience: skill-manager-github
-        secretName: skill-manager-github-exchange
-        grantApp: github
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+          existingSecret: skill-manager-github-exchange
+          caSecretName: muster-ca
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --github-grant-app=github
+          content: --github-token-exchange-endpoint=https://muster.example.com/oauth/token
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-audience=skill-manager-app
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-client-id-file=/etc/skill-manager/github-token-exchange/client-id
       - contains:
           path: spec.template.spec.containers[0].args
           content: --github-token-exchange-client-secret-file=/etc/skill-manager/github-token-exchange/client-secret
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-ca-file=/etc/skill-manager/github-token-exchange-ca/ca.crt
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-client-id=
       - contains:
           path: spec.template.spec.volumes
           content:
@@ -149,11 +163,8 @@ tests:
             secret:
               secretName: skill-manager-github-exchange
               defaultMode: 0440
-              items:
-                - key: client-secret
-                  path: client-secret
 
-  - it: refuses githubTokenExchange without the grant App
+  - it: passes the client ID and names the rendered Secret
     set:
       oauth:
         enabled: true
@@ -163,11 +174,74 @@ tests:
         identity:
           issuerUrl: https://dex.example.com
           clientId: platform-client
-      githubTokenExchange:
-        endpoint: https://muster.example.com/oauth/token
-        clientID: skill-manager
-        audience: skill-manager-github
-        secretName: skill-manager-github-exchange
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+          clientID: skill-manager
+          clientSecret: fixture
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-client-id=skill-manager
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: github-token-exchange
+            secret:
+              secretName: skill-manager-github-token-exchange
+              defaultMode: 0440
+
+  - it: renders no token exchange while it is unset
+    set:
+      github:
+        enabled: true
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --github-token-exchange-audience=skill-manager-app
+      - isNull:
+          path: spec.template.spec.volumes[1]
+
+  - it: refuses the token exchange while github.enabled is false
+    set:
+      github:
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+          existingSecret: skill-manager-github-exchange
     asserts:
       - failedTemplate:
-          errorMessage: githubTokenExchange.grantApp is required
+          errorMessage: "github.tokenExchange.tokenEndpoint is set while github.enabled is false: set github.enabled to check private repositories as the person"
+
+  - it: refuses the token exchange without OAuth
+    set:
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+          existingSecret: skill-manager-github-exchange
+    asserts:
+      - failedTemplate:
+          errorMessage: "github.tokenExchange exchanges the person's ID token, which the server validates as an OAuth resource server: set oauth.enabled"
+
+  - it: refuses the token exchange without an audience or a client secret
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+      github:
+        enabled: true
+        tokenExchange:
+          tokenEndpoint: https://muster.example.com/oauth/token
+          audience: skill-manager-app
+    asserts:
+      - failedTemplate:
+          errorMessage: github.tokenExchange.existingSecret or github.tokenExchange.clientSecret is required with github.tokenExchange.tokenEndpoint

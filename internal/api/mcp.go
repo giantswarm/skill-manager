@@ -208,15 +208,14 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultStructured(v, string(raw)), nil
 }
 
-// toolError is a refusal as a tool error: its kind (forbidden, not found,
-// upstream failure, invalid) and the item it names.
 // statusGrantRequired is muster's provider App contract: a tool result whose
 // structured status it is names, under apps, the Apps the call needs.
 const statusGrantRequired = "grant_required"
 
-// toolError is the tool's refusal. A missing provider App grant also carries
-// {"status": "grant_required", "apps": [<app>]} as structured content, which
-// muster answers with the App's sign-in.
+// toolError is a refusal as a tool error: its kind (forbidden, not found,
+// upstream failure, invalid) and the item it names. A missing provider App
+// grant also carries {"status": "grant_required", "apps": [<app>]} as
+// structured content, which muster answers with the App's sign-in.
 func toolError(err error) *mcp.CallToolResult {
 	if grant, ok := errors.AsType[*catalog.ErrGrantRequired](err); ok {
 		res := mcp.NewToolResultError(statusGrantRequired + ": " + grant.Reason)

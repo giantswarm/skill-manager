@@ -15,31 +15,21 @@ import (
 	"github.com/giantswarm/skill-manager/internal/lru"
 )
 
-// GitHubPin makes the MCP endpoint the App-pinned registration muster
-// connects with (MCPServer auth.authorizationServer pinned to a GitHub App,
-// auth.forwardIdentity: true), as agent-manager's is: the bearer is the
-// person's user token of the App, verified with GET /user, whose login
-// decides whether they may read a private skill repository, and the person's
-// IdP ID token arrives in ForwardedIdentityHeader. That token then goes
-// through the same validation a forwarded bearer takes without the pin.
-type GitHubPin struct {
-	// AuthorizationServer is the App's issuer identity muster pins, as
-	// https://github.com/apps/giantswarm-agent-manager: named in the
-	// refusals.
-	AuthorizationServer string
+// gitHubPair is the deprecated forwarded GitHub pair a REST caller
+// (agent-manager) sends: the person's GitHub user token as the bearer,
+// verified with GET /user, whose login decides about private repositories,
+// and the person's IdP ID token in ForwardedIdentityHeader, which goes
+// through the same validation a bearer takes without the pair.
+type gitHubPair struct {
 	// APIURL is the API base URL GET /user goes to (empty: api.github.com).
 	APIURL string
 	// CacheTTL bounds how long a verified bearer is trusted without asking
 	// GitHub again (zero: DefaultGitHubCacheTTL).
 	CacheTTL time.Duration
-	// MusterServer is this server's MCPServer name in muster, which a
-	// refusal names for core_auth_login. Empty: the REST guard of a caller
-	// that forwards the person's GitHub token itself, named in no refusal.
-	MusterServer string
 }
 
-// ForwardedIdentityHeader is where muster puts the person's IdP ID token on
-// every call to a registration with auth.forwardIdentity.
+// ForwardedIdentityHeader is where a REST caller puts the person's IdP ID
+// token beside their GitHub token (the deprecated forwarded GitHub pair).
 const ForwardedIdentityHeader = "X-Muster-Id-Token"
 
 // DefaultGitHubAPIURL is GitHub's REST API.
@@ -54,17 +44,15 @@ const DefaultGitHubCacheTTL = 15 * time.Minute
 const gitHubCacheMax = 10_000
 
 // Validate checks required fields.
-func (p GitHubPin) Validate() error {
-	for what, raw := range map[string]string{"authorization server": p.AuthorizationServer, "API URL": p.apiURL()} {
-		u, err := url.Parse(raw)
-		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-			return fmt.Errorf("github pin: %s must be an absolute http(s) URL: %q", what, raw)
-		}
+func (p gitHubPair) Validate() error {
+	u, err := url.Parse(p.apiURL())
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return fmt.Errorf("github pair: API URL must be an absolute http(s) URL: %q", p.apiURL())
 	}
 	return nil
 }
 
-func (p GitHubPin) apiURL() string {
+func (p gitHubPair) apiURL() string {
 	if p.APIURL == "" {
 		return DefaultGitHubAPIURL
 	}
@@ -74,7 +62,7 @@ func (p GitHubPin) apiURL() string {
 // gitHubGuard verifies the GitHub bearer and hands the forwarded ID token on
 // as the bearer the IdP validation reads.
 type gitHubGuard struct {
-	pin  GitHubPin
+	pair gitHubPair
 	http *http.Client
 	log  *slog.Logger
 
@@ -86,24 +74,19 @@ type gitHubEntry struct {
 	until time.Time
 }
 
-func newGitHubGuard(pin GitHubPin, log *slog.Logger) (*gitHubGuard, error) {
-	if err := pin.Validate(); err != nil {
+func newGitHubGuard(pair gitHubPair, log *slog.Logger) (*gitHubGuard, error) {
+	if err := pair.Validate(); err != nil {
 		return nil, err
 	}
-	if pin.CacheTTL <= 0 {
-		pin.CacheTTL = DefaultGitHubCacheTTL
+	if pair.CacheTTL <= 0 {
+		pair.CacheTTL = DefaultGitHubCacheTTL
 	}
-	log.Info("GitHub bearer verification enabled", "authorizationServer", pin.AuthorizationServer, "api", pin.apiURL(), "cacheTTL", pin.CacheTTL)
-	return &gitHubGuard{pin: pin, http: &http.Client{Timeout: 10 * time.Second}, log: log, cache: lru.New[[sha256.Size]byte, gitHubEntry](gitHubCacheMax)}, nil
+	log.Info("GitHub bearer verification enabled for the forwarded GitHub pair", "api", pair.apiURL(), "cacheTTL", pair.CacheTTL)
+	return &gitHubGuard{pair: pair, http: &http.Client{Timeout: 10 * time.Second}, log: log, cache: lru.New[[sha256.Size]byte, gitHubEntry](gitHubCacheMax)}, nil
 }
 
-// signIn is the one way to a bearer this registration accepts.
-func (g *gitHubGuard) signIn() string {
-	if g.pin.MusterServer == "" {
-		return "send the person's valid GitHub user token"
-	}
-	return "connect " + g.pin.MusterServer + " in muster (core_auth_login server=" + g.pin.MusterServer + ", the consent of " + g.pin.AuthorizationServer + "), then call again"
-}
+// signIn is the one way to a bearer the pair accepts.
+const signIn = "send the person's valid GitHub user token"
 
 // githubTokenKey carries the GitHub bearer from swap to check.
 type githubTokenKey struct{}
@@ -122,12 +105,12 @@ func (g *gitHubGuard) swap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		if token == "" {
-			g.refuse(w, "", "no bearer token: "+g.signIn())
+			g.refuse(w, "", "no bearer token: "+signIn)
 			return
 		}
 		idToken := strings.TrimSpace(r.Header.Get(ForwardedIdentityHeader))
 		if idToken == "" {
-			g.refuse(w, errInvalidToken, "no "+ForwardedIdentityHeader+" header: this registration needs your platform identity beside your GitHub token, which muster forwards only with auth.forwardIdentity: true on the MCPServer")
+			g.refuse(w, errInvalidToken, "no "+ForwardedIdentityHeader+" header: a GitHub token needs your platform identity beside it")
 			return
 		}
 		r = r.Clone(context.WithValue(r.Context(), githubTokenKey{}, token))
@@ -146,7 +129,7 @@ func (g *gitHubGuard) check(next http.Handler) http.Handler {
 		login, status, err := g.verify(r.Context(), token)
 		switch {
 		case status == http.StatusUnauthorized:
-			g.refuse(w, errInvalidToken, fmt.Sprintf("GitHub refused the bearer token (%d): %s", status, g.signIn()))
+			g.refuse(w, errInvalidToken, fmt.Sprintf("GitHub refused the bearer token (%d): %s", status, signIn))
 			return
 		case err != nil:
 			g.log.Warn("GitHub bearer verification failed", "error", err)
@@ -165,7 +148,7 @@ func (g *gitHubGuard) verify(ctx context.Context, token string) (string, int, er
 	if e, ok := g.cache.Get(key); ok && now.Before(e.until) {
 		return e.login, 0, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pin.apiURL()+"/user", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.pair.apiURL()+"/user", nil)
 	if err != nil {
 		return "", 0, err
 	}
@@ -185,7 +168,7 @@ func (g *gitHubGuard) verify(ctx context.Context, token string) (string, int, er
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil || user.Login == "" {
 		return "", 0, fmt.Errorf("GET /user: no login in the answer")
 	}
-	g.cache.Add(key, gitHubEntry{login: user.Login, until: now.Add(g.pin.CacheTTL)})
+	g.cache.Add(key, gitHubEntry{login: user.Login, until: now.Add(g.pair.CacheTTL)})
 	return user.Login, 0, nil
 }
 

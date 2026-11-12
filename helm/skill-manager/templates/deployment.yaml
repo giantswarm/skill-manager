@@ -1,6 +1,7 @@
 {{- if and .Values.serviceToken.secretName (not .Values.oauth.enabled) }}
 {{- fail "serviceToken.secretName needs oauth.enabled: without it the API admits everyone" }}
 {{- end }}
+{{- $exchange := include "skill-manager.githubTokenExchange" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,12 +50,9 @@ spec:
             - {{ printf "--sources=%s" (toJson .) | quote }}
             {{- end }}
             - --cache-ttl={{ .Values.cacheTTL }}
-            - --github-api-url={{ .Values.github.apiUrl }}
+            - --github-api-url={{ .Values.github.apiURL }}
             - --oci-registries={{ join "," .Values.oci.registries }}
             {{- if .Values.github.app.secretName }}
-            {{- if .Values.github.tokenSecret.name }}
-            {{- fail "github.app.secretName and github.tokenSecret.name are mutually exclusive: skills are read with one credential" }}
-            {{- end }}
             - --github-app-private-key-file=/etc/skill-manager/github-app/private-key
             {{- end }}
             {{- if .Values.oauth.enabled }}
@@ -77,20 +75,18 @@ spec:
             {{- if .Values.oauth.allowPublicClientRegistration }}
             - --allow-public-client-registration=true
             {{- end }}
-            {{- if .Values.muster.mcpServer.auth.github.enabled }}
-            - --github-authorization-server={{ .Values.muster.mcpServer.auth.github.authorizationServer.issuer }}
-            - --muster-server={{ .Values.muster.mcpServer.name }}
             {{- end }}
-            {{- with .Values.githubTokenExchange }}
-            {{- if .endpoint }}
-            - --github-token-exchange-endpoint={{ .endpoint }}
-            - --github-token-exchange-client-id={{ required "githubTokenExchange.clientID is required" .clientID }}
-            - --github-token-exchange-audience={{ required "githubTokenExchange.audience is required" .audience }}
+            {{- if $exchange }}
+            {{- with .Values.github.tokenExchange }}
+            - --github-token-exchange-endpoint={{ .tokenEndpoint }}
+            - --github-token-exchange-audience={{ .audience }}
+            {{- with .clientID }}
+            - --github-token-exchange-client-id={{ . }}
+            {{- end }}
+            - --github-token-exchange-client-id-file=/etc/skill-manager/github-token-exchange/client-id
             - --github-token-exchange-client-secret-file=/etc/skill-manager/github-token-exchange/client-secret
-            - --github-grant-app={{ required "githubTokenExchange.grantApp is required" .grantApp }}
             {{- if .caSecretName }}
             - --github-token-exchange-ca-file=/etc/skill-manager/github-token-exchange-ca/ca.crt
-            {{- end }}
             {{- end }}
             {{- end }}
             {{- end }}
@@ -130,13 +126,6 @@ spec:
                 secretKeyRef:
                   name: {{ . }}
                   key: installation-id
-            {{- end }}
-            {{- with .Values.github.tokenSecret.name }}
-            - name: GITHUB_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ . }}
-                  key: {{ $.Values.github.tokenSecret.key }}
             {{- end }}
             {{- with .Values.observability.otel }}
             {{- if .endpoint }}
@@ -235,11 +224,11 @@ spec:
               mountPath: /etc/skill-manager/idp-ca
               readOnly: true
             {{- end }}
-            {{- if .Values.githubTokenExchange.endpoint }}
+            {{- if $exchange }}
             - name: github-token-exchange
               mountPath: /etc/skill-manager/github-token-exchange
               readOnly: true
-            {{- if .Values.githubTokenExchange.caSecretName }}
+            {{- if .Values.github.tokenExchange.caSecretName }}
             - name: github-token-exchange-ca
               mountPath: /etc/skill-manager/github-token-exchange-ca
               readOnly: true
@@ -264,18 +253,16 @@ spec:
               - key: {{ include "skill-manager.oauthDexCASecretKey" . }}
                 path: {{ include "skill-manager.oauthDexCASecretKey" . }}
         {{- end }}
-        {{- if .Values.githubTokenExchange.endpoint }}
+        {{- if $exchange }}
+        {{- /* The whole Secret: a missing client-id key does not block the pod. */}}
         - name: github-token-exchange
           secret:
-            secretName: {{ required "githubTokenExchange.secretName is required" .Values.githubTokenExchange.secretName }}
+            secretName: {{ include "skill-manager.githubTokenExchangeSecretName" . }}
             defaultMode: 0440
-            items:
-              - key: client-secret
-                path: client-secret
-        {{- if .Values.githubTokenExchange.caSecretName }}
+        {{- if .Values.github.tokenExchange.caSecretName }}
         - name: github-token-exchange-ca
           secret:
-            secretName: {{ .Values.githubTokenExchange.caSecretName }}
+            secretName: {{ .Values.github.tokenExchange.caSecretName }}
             items:
               - key: ca.crt
                 path: ca.crt

@@ -43,44 +43,47 @@ global: {}  # @schema type: object; additionalProperties: true
 # needs paths that do not contain each other.
 sources: []  # @schema item: [string, object]; itemRequired: [url]; itemProperties: {url: {type: string, pattern: "^https://github\\.com/[^/]+/[^/]+$"}, ref: {type: string}, path: {type: string}, readOnly: {type: boolean}}
 
-githubTokenExchange:
-  # -- RFC 8693 token endpoint (muster's broker) that releases the person's
-  # GitHub App user grant when a private repository needs their GitHub
-  # login, in place of the `muster.mcpServer.auth.github` pin. Listings never
-  # ask for it: without the grant they leave out the private sources and
-  # name `grantApp` under `grantRequired`; pinning or reading a private
-  # skill answers `grant_required`. Needs `oauth.enabled`. Empty: off.
-  endpoint: ""
-  # -- Confidential broker client ID, allowed to retrieve only that App grant.
-  clientID: ""
-  # -- Broker target that releases the grant of the App `grantApp` names.
-  audience: ""
-  # -- muster's name for the provider App (its `aggregator.providerApps`
-  # key) whose grant `audience` releases. The MCPServer lists it under
-  # `auth.providerApps`, so muster answers `grant_required` with that App's
-  # sign-in link. Required with `endpoint`.
-  grantApp: ""
-  # -- Existing Secret in the release namespace, containing client-secret.
-  secretName: ""
-  # -- Optional existing Secret with ca.crt for the broker's private CA.
-  caSecretName: ""
-
 github:
-  # -- GitHub API base URL: discovery, pinning, and `GET /user` for a
-  # person's GitHub token.
-  apiUrl: https://api.github.com
+  # -- Private skill repositories, checked as the person: GitHub decides
+  # whether they can read one. With `tokenExchange`, the MCP tools and the
+  # REST API fetch the person's user token of skill-manager's GitHub App
+  # (`app`) for a private repository only and ask GitHub as them. Off:
+  # `tokenExchange` is refused.
+  enabled: false
+  # -- GitHub API base URL: discovery, pinning, the person's access to a
+  # private repository, and `GET /user` for a forwarded GitHub token.
+  apiURL: https://api.github.com
+  tokenExchange:
+    # -- RFC 8693 token endpoint (muster's broker) that releases the
+    # person's user token of skill-manager's GitHub App when a private
+    # repository needs it; `GET /repos/{owner}/{repo}` as the person then
+    # decides. Listings never ask for it: without the grant they leave out
+    # the private sources and name `audience` under `grantRequired`; pinning
+    # or reading a private skill answers `grant_required`. Needs
+    # `github.enabled` and `oauth.enabled`. Empty: off.
+    tokenEndpoint: ""
+    # -- RFC 8693 audience that releases the grant, also the App named in the
+    # `grant_required` answer and in the MCPServer's `auth.providerApps`.
+    # Required with `tokenEndpoint`.
+    audience: ""
+    # -- Confidential client ID at the broker. Empty: read from the Secret's
+    # `client-id` key.
+    clientID: ""
+    # -- Client secret, rendered into the Secret
+    # `<fullname>-github-token-exchange`; prefer `existingSecret`.
+    clientSecret: ""
+    # -- Existing Secret in the release namespace with `client-secret` (and
+    # `client-id` when `clientID` is empty).
+    existingSecret: ""
+    # -- Optional existing Secret with `ca.crt` for the broker's private CA.
+    caSecretName: ""
   app:
-    # -- Existing Secret in the release namespace of the read-only skills
-    # GitHub App, with the keys `app-id`, `installation-id` and `private-key`
-    # (PEM): skills are discovered and pinned with the App's installation
-    # tokens, at the App's rate limit. Mutually exclusive with `tokenSecret`.
+    # -- Existing Secret in the release namespace of skill-manager's
+    # read-only GitHub App, with the keys `app-id`, `installation-id` and
+    # `private-key` (PEM): skills are discovered and pinned with the App's
+    # installation tokens, at the App's rate limit. Empty: anonymous, public
+    # repositories only.
     secretName: ""
-  tokenSecret:
-    # -- Existing Secret in the release namespace with a static GitHub token.
-    # Prefer `app`. Empty (and no `app`): anonymous, public repositories only.
-    name: ""
-    # -- Key of the token in that Secret.
-    key: token
 
 # -- How long a source's discovered skills and head commit are reused. A
 # failed read is retried after 30 seconds and keeps the last good listing.
@@ -112,11 +115,11 @@ oauth:
   # endpoint and the REST API require a bearer token Dex issued, validated
   # against Dex's JWKS when its audience is in `trustedAudiences`. muster
   # forwards the session's Dex id_token (`muster.mcpServer.auth`);
-  # agent-manager and the portal forward the person's. A REST call may
-  # instead carry the person's GitHub token as the bearer and the id_token in
-  # `X-Muster-Id-Token`, as agent-manager forwards them on its GitHub
-  # registration: the GitHub login then opens the private repositories the
-  # person can read. Off: no authentication at all, and private repositories
+  # agent-manager and the portal forward the person's. Deprecated: a REST
+  # call may instead carry the person's GitHub token as the bearer and the
+  # id_token in `X-Muster-Id-Token`, as agent-manager forwards them on its
+  # GitHub registration: the GitHub login then opens the private repositories
+  # the person can read. Off: no authentication at all, and private repositories
   # are refused; only for a server nothing but a trusted proxy can reach. Off
   # by default only because it needs the installation's Dex: the
   # `agent-platform` meta chart turns it on.
@@ -184,46 +187,16 @@ muster:
     # -- How muster authenticates to this server; rendered only with
     # `oauth.enabled`. `forwardToken` makes muster forward the session's Dex
     # id_token byte-identical (the SSO path this chart trusts through its
-    # trusted audiences), unless `github.enabled` pins a GitHub App. `requiredAudiences` are extra audiences that token
-    # must carry — the Dex cross-client audience the kube-apiserver trusts
-    # (`dex-k8s-authenticator` on Giant Swarm clusters; agentlab's is
-    # `kubernetes`); muster requests them at login, so users re-login after a
+    # trusted audiences); with `github.tokenExchange` the CR also lists its
+    # `audience` under `auth.providerApps`. `requiredAudiences` are extra
+    # audiences that token must carry — the Dex cross-client audience the
+    # kube-apiserver trusts (`dex-k8s-authenticator` on Giant Swarm clusters;
+    # agentlab's is `kubernetes`); muster requests them at login, so users re-login after a
     # change. They are trusted as bearer audiences by construction, since the
     # server's trusted audiences are `oauth.trustedAudiences` plus this list.
     auth:
       forwardToken: true
       requiredAudiences: []
-      github:
-        # -- Pin the registration to a GitHub App, as agent-manager's
-        # `github.enabled` does: muster runs the App's consent once per
-        # person and puts their user token on every call, which this server
-        # verifies with `GET /user`; its login opens the private
-        # repositories the person can read. `forwardIdentity` puts the Dex
-        # ID token in `X-Muster-Id-Token` beside it. Needs `oauth.enabled`.
-        # Off: no MCP caller has a GitHub login.
-        enabled: false
-        authorizationServer:
-          # -- The issuer identity the person's grant is filed under: the
-          # App's own.
-          issuer: https://github.com/apps/giantswarm-agent-manager
-          # -- The issuer GitHub puts in the RFC 9207 `iss` parameter.
-          # Empty omits the field.
-          expectedIssuer: https://github.com/login/oauth
-          # -- GitHub's authorize endpoint.
-          authorizationEndpoint: https://github.com/login/oauth/authorize
-          # -- GitHub's token endpoint.
-          tokenEndpoint: https://github.com/login/oauth/access_token
-          # -- The OAuth `scope` parameter, only for an authorization server
-          # that needs one. Empty omits the field.
-          scopes: ""
-          clientCredentialsSecretRef:
-            # -- Secret with the App's OAuth client under `client-id` and
-            # `client-secret`, which muster reads.
-            name: giantswarm-agent-manager-oauth-client
-            # -- Namespace of that Secret; empty is the release namespace.
-            namespace: ""
-          # -- `subject`: the grant belongs to the person.
-          grantScope: subject
 
 networkPolicy:
   # -- Create a Kubernetes NetworkPolicy for the pod.

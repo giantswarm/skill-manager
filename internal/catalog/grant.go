@@ -3,9 +3,9 @@ package catalog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
-	"github.com/giantswarm/skill-manager/internal/identity"
 	"github.com/giantswarm/skill-manager/internal/skills"
 )
 
@@ -22,13 +22,22 @@ type ErrGrantRequired struct {
 
 func (e *ErrGrantRequired) Error() string { return e.Reason }
 
-// GitHubUser fetches the person's GitHub grant for one call.
-type GitHubUser func(context.Context) (*identity.GitHub, error)
+// GitHubGrant is the person's grant of skill-manager's GitHub App, fetched
+// for one call only when a private repository needs it.
+type GitHubGrant struct {
+	// App is the App's name in grant_required answers and listings: the
+	// token exchange audience.
+	App string
+	// Token is the person's user token of the App; a missing grant is
+	// *ErrGrantRequired.
+	Token func(context.Context) (string, error)
+}
 
-// WithGitHubUser fetches the person's grant when a private repository needs
-// their GitHub login and the call carries none (no App-pinned registration).
-func (s *Service) WithGitHubUser(user GitHubUser) *Service {
-	s.gitHubUser = user
+// WithGitHubGrant lets GitHub decide, as the person, about a private
+// repository when the call carries no GitHub login: their user token is
+// fetched and GitHub asked whether it can read the repository.
+func (s *Service) WithGitHubGrant(grant GitHubGrant) *Service {
+	s.gitHubGrant = &grant
 	return s
 }
 
@@ -71,50 +80,47 @@ func (w *Withheld) withhold(grant *ErrGrantRequired) {
 	}
 }
 
-// lazyLogin fetches the person's GitHub login at most once per call, and only
+// lazyGrant fetches the person's user token at most once per call, and only
 // when a private repository asks for it.
-type lazyLogin struct {
-	user  GitHubUser
+type lazyGrant struct {
+	fetch func(context.Context) (string, error)
 	once  sync.Once
-	login string
+	token string
 	err   error
 }
 
-func (s *Service) lazyLogin() *lazyLogin {
-	if s.gitHubUser == nil {
+func (s *Service) lazyGrant() *lazyGrant {
+	if s.gitHubGrant == nil {
 		return nil
 	}
-	return &lazyLogin{user: s.gitHubUser}
+	return &lazyGrant{fetch: s.gitHubGrant.Token}
 }
 
-func (l *lazyLogin) get(ctx context.Context) (string, error) {
-	l.once.Do(func() {
-		gh, err := l.user(ctx)
-		switch {
-		case err != nil:
-			l.err = err
-		case gh != nil:
-			l.login = gh.Login
-		}
-	})
-	return l.login, l.err
+func (l *lazyGrant) get(ctx context.Context) (string, error) {
+	l.once.Do(func() { l.token, l.err = l.fetch(ctx) })
+	return l.token, l.err
 }
 
-// requireReadable is the pinner's RequireReadable with the caller's GitHub
-// login: the App-pinned registration's, else, only for a repository that is
-// private, the one login fetches. A public repository never asks for it.
-func (s *Service) requireReadable(ctx context.Context, repoURL string, login *lazyLogin) error {
+// requireReadable decides whether the caller may read repoURL. A caller with
+// a verified GitHub login (the forwarded GitHub pair) is checked by that
+// login. Otherwise a public repository is readable without asking anyone,
+// and for a private one, with a grant configured, GitHub decides as the
+// person: their user token is fetched (grant) and GitHub asked whether it
+// reads the repository.
+func (s *Service) requireReadable(ctx context.Context, repoURL string, grant *lazyGrant) error {
 	known := gitHubLogin(ctx)
 	err := s.pinner.RequireReadable(ctx, repoURL, known)
-	if known != "" || login == nil || !errors.Is(err, skills.ErrNotReadable) {
+	if known != "" || grant == nil || !errors.Is(err, skills.ErrNotReadable) {
 		return err
 	}
-	fetched, lerr := login.get(ctx)
-	if lerr != nil {
-		return lerr
-	}
-	if fetched == "" {
+	token, err := grant.get(ctx)
+	if err != nil {
 		return err
 	}
-	return s.pinner.RequireReadable(ctx, repoURL, fetched)
+	err = s.pinner.RequireReadableAs(ctx, repoURL, token)
+	if errors.Is(err, skills.ErrUserTokenRefused) {
+		app := s.gitHubGrant.App
+		return &ErrGrantRequired{App: app, Reason: fmt.Sprintf("GitHub refused your grant of the GitHub App %s: grant it again in muster (core_auth_login app=%s), then call again", app, app)}
+	}
+	return err
 }

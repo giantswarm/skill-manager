@@ -261,37 +261,50 @@ func TestResolveChecksAGivenCommit(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
-// grantUser is the person's grant fetched on demand: alice once granted,
-// a grant_required refusal before; calls counts the fetches.
+// grantUser is the person's grant fetched on demand: token is what the
+// exchange releases, "" a grant_required refusal; calls counts the fetches.
 type grantUser struct {
-	granted bool
-	calls   int
+	token string
+	calls int
 }
 
-func (g *grantUser) fetch(context.Context) (*identity.GitHub, error) {
-	g.calls++
-	if !g.granted {
-		return nil, &ErrGrantRequired{App: "github", Reason: "grant it"}
+func (g *grantUser) grant() GitHubGrant {
+	return GitHubGrant{App: "skill-manager-app", Token: func(context.Context) (string, error) {
+		g.calls++
+		if g.token == "" {
+			return "", &ErrGrantRequired{App: "skill-manager-app", Reason: "grant it"}
+		}
+		return g.token, nil
+	}}
+}
+
+// readableAs counts the person-token checks the pinner was asked.
+func readableAs(p *catalogtest.Pinner) int {
+	n := 0
+	for _, c := range p.Calls() {
+		if strings.HasPrefix(c, "readable-as ") {
+			n++
+		}
 	}
-	return &identity.GitHub{Login: "alice", Token: "ghu-alice"}, nil
+	return n
 }
 
 // Listing never asks for the grant: without one, a private source is
 // withheld and counted, the App to grant is named in a field, and its URL is
-// not given. With the grant fetched on demand, it is listed. A public
-// repository never fetches the grant.
+// not given. With the grant fetched on demand, GitHub decides as the person:
+// readable, it is listed; not readable, withheld without a grant hint.
 func TestListingFetchesTheGrantOnlyForPrivateRepositoriesAndNeverAsks(t *testing.T) {
 	repos := []skills.Repository{
 		{RepoURL: catalogtest.SkillsRepo, Commit: catalogtest.TagHead, Skills: []skills.Skill{{Name: "overview", Path: "overview"}}},
 		{RepoURL: catalogtest.PrivateRepo, Commit: catalogtest.MainHead, Private: true, Skills: []skills.Skill{{Name: "secret", Path: "secret"}}},
 	}
 	user := &grantUser{}
-	svc := New(catalogtest.Lister{Repos: repos}, &catalogtest.Pinner{}).WithGitHubUser(user.fetch)
+	svc := New(catalogtest.Lister{Repos: repos}, &catalogtest.Pinner{}).WithGitHubGrant(user.grant())
 
 	res, err := svc.List(t.Context(), "", false)
 	require.NoError(t, err, "listing never answers grant_required")
 	assert.Equal(t, []skills.Repository{repos[0]}, res.Repositories)
-	assert.Equal(t, Withheld{Partial: true, Withheld: 1, GrantRequired: &GrantHint{App: "github"}, Note: noteGrant}, res.Withheld)
+	assert.Equal(t, Withheld{Partial: true, Withheld: 1, GrantRequired: &GrantHint{App: "skill-manager-app"}, Note: noteGrant}, res.Withheld)
 	raw, err := json.Marshal(res)
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), catalogtest.PrivateRepo, "no URL of a withheld repository")
@@ -300,39 +313,80 @@ func TestListingFetchesTheGrantOnlyForPrivateRepositoriesAndNeverAsks(t *testing
 	sources, withheld, err := svc.Sources(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, sources, 1)
-	assert.Equal(t, &GrantHint{App: "github"}, withheld.GrantRequired)
+	assert.Equal(t, &GrantHint{App: "skill-manager-app"}, withheld.GrantRequired)
 
-	user.granted = true
+	user.token = "ghu-alice"
 	res, err = svc.List(t.Context(), "", false)
 	require.NoError(t, err)
-	assert.Equal(t, repos, res.Repositories)
+	assert.Equal(t, repos, res.Repositories, "GitHub answers 200 as the person: listed")
 	assert.Equal(t, Withheld{}, res.Withheld)
 
-	public := &grantUser{}
-	_, err = New(catalogtest.Lister{Repos: repos[:1]}, &catalogtest.Pinner{}).WithGitHubUser(public.fetch).List(t.Context(), "", false)
+	user.token = "ghu-bob"
+	res, err = svc.List(t.Context(), "", false)
+	require.NoError(t, err)
+	assert.Equal(t, []skills.Repository{repos[0]}, res.Repositories, "GitHub answers 404 as the person: withheld")
+	assert.Equal(t, Withheld{Partial: true, Withheld: 1, Note: noteWithheld}, res.Withheld, "no grant to ask for: the person has one")
+
+	user.token = "ghu-revoked"
+	res, err = svc.List(t.Context(), "", false)
+	require.NoError(t, err, "a refused grant is still no grant_required while listing")
+	assert.Equal(t, &GrantHint{App: "skill-manager-app"}, res.GrantRequired)
+
+	public := &grantUser{token: "ghu-alice"}
+	pinner := &catalogtest.Pinner{}
+	_, err = New(catalogtest.Lister{Repos: repos[:1]}, pinner).WithGitHubGrant(public.grant()).List(t.Context(), "", false)
 	require.NoError(t, err)
 	assert.Zero(t, public.calls, "a public repository never fetches the grant")
+	assert.Zero(t, readableAs(pinner), "nor asks GitHub as the person")
 }
 
 // An explicit action that needs the person's view of a private repository,
 // pinning it or reading its content, answers grant_required without the
-// grant and goes through with it.
+// grant, forbidden when GitHub says the person cannot read it, and goes
+// through when GitHub says they can.
 func TestPinningAPrivateRepositoryAsksForTheGrant(t *testing.T) {
 	user := &grantUser{}
 	svc, _ := newService()
-	svc.WithGitHubUser(user.fetch)
+	svc.WithGitHubGrant(user.grant())
 	request := Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}}
 
 	_, err := svc.Resolve(t.Context(), request)
 	grant, ok := errors.AsType[*ErrGrantRequired](err)
 	require.True(t, ok, "%v", err)
-	assert.Equal(t, "github", grant.App)
+	assert.Equal(t, "skill-manager-app", grant.App)
 
-	user.granted = true
+	user.token = "ghu-revoked"
+	_, err = svc.Resolve(t.Context(), request)
+	grant, ok = errors.AsType[*ErrGrantRequired](err)
+	require.True(t, ok, "a grant GitHub refuses is asked for again: %v", err)
+	assert.Equal(t, "skill-manager-app", grant.App)
+
+	user.token = "ghu-bob"
+	_, err = svc.Resolve(t.Context(), request)
+	require.ErrorIs(t, err, ErrForbidden, "GitHub answers 404 as the person")
+	_, err = contentService().WithGitHubGrant(user.grant()).Skill(t.Context(), catalogtest.PrivateRepo, catalogtest.MainHead, "x")
+	require.ErrorIs(t, err, ErrForbidden)
+
+	user.token = "ghu-alice"
 	got, err := svc.Resolve(t.Context(), request)
 	require.NoError(t, err)
 	assert.Equal(t, catalogtest.MainHead, got.Skills[0].Git.Commit)
+	_, err = contentService().WithGitHubGrant(user.grant()).Skill(t.Context(), catalogtest.PrivateRepo, catalogtest.MainHead, "x")
+	require.NoError(t, err)
 
+	user.calls = 0
 	_, err = svc.Resolve(t.Context(), Request{Skills: []Item{gitSkill("y", catalogtest.SkillsRepo, "", "")}})
 	require.NoError(t, err)
+	assert.Zero(t, user.calls, "a public repository never fetches the grant")
+}
+
+// The forwarded GitHub pair's login decides on its own: the grant is never
+// fetched for it.
+func TestForwardedLoginNeverFetchesTheGrant(t *testing.T) {
+	user := &grantUser{token: "ghu-bob"}
+	svc, _ := newService()
+	svc.WithGitHubGrant(user.grant())
+	_, err := svc.Resolve(asAlice(t.Context()), Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}})
+	require.NoError(t, err)
+	assert.Zero(t, user.calls)
 }

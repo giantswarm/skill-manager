@@ -27,8 +27,9 @@ const (
 )
 
 // Pinner answers like GitHub and a registry would: refs of SkillsRepo,
-// PrivateRepo readable by alice only, OCI tags of one image, and the paths
-// that exist at every commit.
+// PrivateRepo readable by alice only (her login, or her user token
+// "ghu-alice"; "ghu-revoked" is a token GitHub refuses), OCI tags of one
+// image, and the paths that exist at every commit.
 type Pinner struct {
 	mu    sync.Mutex
 	calls []string
@@ -80,6 +81,19 @@ func (p *Pinner) RequireReadable(_ context.Context, repoURL, login string) error
 		return fmt.Errorf("%w: %w: %s: GitHub answered 404", skills.ErrUnresolvable, skills.ErrNotFound, repoURL)
 	}
 	return nil
+}
+
+func (p *Pinner) RequireReadableAs(_ context.Context, repoURL, userToken string) error {
+	p.record("readable-as " + repoURL)
+	switch {
+	case repoURL == MissingRepo:
+		return fmt.Errorf("%w: %w: %s: GitHub answered 404", skills.ErrUnresolvable, skills.ErrNotFound, repoURL)
+	case repoURL != PrivateRepo, userToken == "ghu-alice":
+		return nil
+	case userToken == "ghu-revoked":
+		return fmt.Errorf("%w: %s", skills.ErrUserTokenRefused, repoURL)
+	}
+	return fmt.Errorf("%w: %s is private and your GitHub account cannot read it", skills.ErrNotReadable, repoURL)
 }
 
 func (p *Pinner) ClaudeFormatPlugin(_ context.Context, _, _, path string) (bool, error) {

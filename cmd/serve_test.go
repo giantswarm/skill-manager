@@ -50,15 +50,11 @@ func TestServeSourcesFlagRefusesOverlaps(t *testing.T) {
 	assert.Contains(t, err.Error(), "overlapping")
 }
 
-// Skills are read with one credential: the GitHub App, a token, or none.
+// Skills are read with the GitHub App, or anonymously.
 func TestServeTokenSource(t *testing.T) {
 	ts, err := parse(t).tokenSource()
 	require.NoError(t, err)
 	assert.Equal(t, skills.StaticToken(""), ts, "anonymous")
-
-	ts, err = parse(t, "--github-token=t0k").tokenSource()
-	require.NoError(t, err)
-	assert.Equal(t, skills.StaticToken("t0k"), ts)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -68,9 +64,6 @@ func TestServeTokenSource(t *testing.T) {
 	ts, err = parse(t, app...).tokenSource()
 	require.NoError(t, err)
 	assert.IsType(t, &skills.App{}, ts)
-
-	_, err = parse(t, append(app, "--github-token=t0k")...).tokenSource()
-	assert.ErrorContains(t, err, "mutually exclusive")
 }
 
 func TestServeDefaults(t *testing.T) {
@@ -82,10 +75,20 @@ func TestServeDefaults(t *testing.T) {
 	assert.False(t, o.oauthEnabled)
 }
 
-// The GitHub App pin needs OAuth, which validates the ID token beside it.
-func TestServePinNeedsOAuth(t *testing.T) {
-	_, err := parse(t, "--github-authorization-server=https://github.com/apps/x").serverConfig()
+// The token exchange needs OAuth, which validates the ID token it
+// exchanges, and its options need the endpoint.
+func TestServeGitHubTokenExchangeOptions(t *testing.T) {
+	exchange := []string{"--github-token-exchange-endpoint=https://muster.example.com/oauth/token", "--github-token-exchange-audience=skill-manager-app", "--github-token-exchange-client-id-file=/mounted/client-id", "--github-token-exchange-client-secret-file=/mounted/client-secret"}
+	_, err := parse(t, exchange...).serverConfig()
 	assert.ErrorContains(t, err, "--enable-oauth")
+
+	o := parse(t, exchange...)
+	o.oauthEnabled = true
+	require.NoError(t, validateGitHubExchange(o), "the client ID may come from its file")
+	assert.Equal(t, "skill-manager-app", o.gitHubExchangeConfig().Audience)
+
+	_, err = parse(t, "--github-token-exchange-audience=skill-manager-app").serverConfig()
+	assert.ErrorContains(t, err, "--github-token-exchange-endpoint")
 }
 
 // The service token and the GitHub API reach the REST guard.

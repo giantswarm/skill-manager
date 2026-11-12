@@ -1,8 +1,9 @@
 // Package catalog is skill-manager's service: the configured skill sources,
 // the skills they hold, and the pins agents mount them by. The MCP tools and
-// the REST API are two views of it; both act for the caller, whose GitHub
-// login (identity.GitHub) decides whether a private repository is theirs to
-// read.
+// the REST API are two views of it; both act for the caller. GitHub decides
+// whether a private repository is theirs to read: as the person, with their
+// user token of skill-manager's GitHub App (GitHubGrant), or by the login of
+// the GitHub token a REST caller forwards (identity.GitHub).
 package catalog
 
 import (
@@ -51,6 +52,7 @@ type Pinner interface {
 	GitHead(ctx context.Context, repoURL, ref string) (string, error)
 	OCIDigest(ctx context.Context, ref string) (string, error)
 	RequireReadable(ctx context.Context, repoURL, login string) error
+	RequireReadableAs(ctx context.Context, repoURL, userToken string) error
 	ClaudeFormatPlugin(ctx context.Context, repoURL, commit, path string) (bool, error)
 	PathExists(ctx context.Context, repoURL, commit, path string) (bool, error)
 	CommitExists(ctx context.Context, repoURL, commit string) error
@@ -60,9 +62,9 @@ type Pinner interface {
 type Service struct {
 	skills Lister
 	pinner Pinner
-	// gitHubUser fetches the person's grant for a private repository when
-	// the call carries no GitHub login (nil: the pinned registration's only).
-	gitHubUser GitHubUser
+	// gitHubGrant fetches the person's grant for a private repository when
+	// the call carries no GitHub login (nil: the forwarded pair's login only).
+	gitHubGrant *GitHubGrant
 }
 
 // New builds the service.
@@ -90,7 +92,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, Withheld, error) {
 	list := s.skills.Sources()
 	out := make([]Source, len(list))
 	hidden := make([]*withheldEntry, len(list))
-	login := s.lazyLogin()
+	grant := s.lazyGrant()
 	var wg sync.WaitGroup
 	for i, src := range list {
 		out[i] = Source{URL: src.URL, Ref: src.Ref, Path: src.Path, ReadOnly: src.ReadOnly}
@@ -100,7 +102,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, Withheld, error) {
 			case err != nil:
 				out[i].Error = err.Error()
 			case head.Private && !identity.IsService(ctx):
-				if err := s.requireReadable(ctx, src.URL, login); err != nil {
+				if err := s.requireReadable(ctx, src.URL, grant); err != nil {
 					hidden[i] = withheldFor(err)
 					return
 				}
@@ -159,9 +161,9 @@ func (s *Service) List(ctx context.Context, source string, refresh bool) (*Listi
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	out := &Listing{Result: skills.Result{Repositories: make([]skills.Repository, 0, len(res.Repositories))}}
-	login := s.lazyLogin()
+	grant := s.lazyGrant()
 	for _, repo := range res.Repositories {
-		shown, entry := s.visible(ctx, repo, login)
+		shown, entry := s.visible(ctx, repo, grant)
 		if entry != nil {
 			out.withhold(entry.grant)
 			continue
@@ -177,11 +179,11 @@ func (s *Service) List(ctx context.Context, source string, refresh bool) (*Listi
 // named, not a configured one, a missing and an unreadable repository get
 // the same answer: the listing does not tell which private repositories
 // exist.
-func (s *Service) visible(ctx context.Context, repo skills.Repository, login *lazyLogin) (skills.Repository, *withheldEntry) {
+func (s *Service) visible(ctx context.Context, repo skills.Repository, grant *lazyGrant) (skills.Repository, *withheldEntry) {
 	if identity.IsService(ctx) || (!repo.Private && repo.Error == "") {
 		return repo, nil
 	}
-	err := s.requireReadable(ctx, repo.RepoURL, login)
+	err := s.requireReadable(ctx, repo.RepoURL, grant)
 	if err == nil || (!repo.Private && !errors.Is(err, skills.ErrNotReadable) && !errors.Is(err, ErrNotFound)) {
 		// Readable, or public with its own error to show.
 		return repo, nil
@@ -261,10 +263,10 @@ func (e *ItemError) Unwrap() error { return e.Err }
 // Resolve pins every item for the caller: a git item to the commit of its
 // ref (none given: the ref of the configured source holding its path, else
 // the default branch; a commit given stays), an OCI item to its digest. The
-// person must be able to read every git repository (RequireReadable: a
-// private one needs their GitHub login's read permission; the platform's
-// service caller is exempt), and every path must exist at its commit. The
-// first refused item fails the whole request.
+// person must be able to read every git repository (requireReadable: GitHub
+// decides about a private one; the platform's service caller is exempt), and
+// every path must exist at its commit. The first refused item fails the
+// whole request.
 func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
 	req.Skills = append([]Item(nil), req.Skills...)
 	req.Plugins = append([]Item(nil), req.Plugins...)
@@ -280,7 +282,7 @@ func (s *Service) Resolve(ctx context.Context, req Request) (*Request, error) {
 			l.items[i] = cleaned
 		}
 	}
-	r := &resolution{svc: s, login: s.lazyLogin(), service: identity.IsService(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
+	r := &resolution{svc: s, grant: s.lazyGrant(), service: identity.IsService(ctx), heads: map[string]string{}, readable: map[string]error{}, paths: map[string]bool{}}
 	out := &Request{}
 	var err error
 	if out.Skills, err = r.pin(ctx, "skills", req.Skills); err != nil {
@@ -340,7 +342,7 @@ func validate(it Item, skill bool) (Item, error) {
 // after another.
 type resolution struct {
 	svc     *Service
-	login   *lazyLogin
+	grant   *lazyGrant
 	service bool
 
 	heads    map[string]string
@@ -419,7 +421,7 @@ func (r *resolution) requireReadable(ctx context.Context, url string) error {
 	}
 	err, seen := r.readable[url]
 	if !seen {
-		err = r.svc.requireReadable(ctx, url, r.login)
+		err = r.svc.requireReadable(ctx, url, r.grant)
 		if err != nil {
 			err = classify(err)
 		}

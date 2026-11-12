@@ -60,21 +60,12 @@ type OAuthConfig struct {
 	// without a token (labs only).
 	AllowPublicClientRegistration bool
 	// GitHubAPIURL is where GET /user verifies a GitHub bearer the REST API
-	// receives beside ForwardedIdentityHeader (empty: api.github.com, or
-	// GitHub.APIURL).
+	// receives beside ForwardedIdentityHeader (empty: api.github.com).
 	GitHubAPIURL string
 	// ServiceToken, when set, is a bearer the REST API admits as the
 	// platform's own service caller (identity.ContextWithService): agent-
 	// manager's migrate, which has no caller. Compared in constant time.
 	ServiceToken string
-	// GitHub, when set, pins the MCP registration to the App: the bearer on
-	// the MCP endpoint is the person's App user token and the IdP ID token
-	// arrives in ForwardedIdentityHeader (GitHubPin). The REST API takes the
-	// same pair when a caller (agent-manager forwarding the person's tokens)
-	// sends ForwardedIdentityHeader, and the IdP token alone as its bearer
-	// otherwise: the person then has no GitHub login, and private
-	// repositories are refused.
-	GitHub *GitHubPin
 }
 
 // Validate checks required fields.
@@ -103,9 +94,8 @@ type oauthRuntime struct {
 	cfg     OAuthConfig
 	mcpPath string
 	log     *slog.Logger
-	github  *gitHubGuard
 	// restGitHub verifies the GitHub bearer of a REST request that carries
-	// ForwardedIdentityHeader, pinned or not.
+	// ForwardedIdentityHeader: the deprecated forwarded GitHub pair.
 	restGitHub *gitHubGuard
 }
 
@@ -139,16 +129,7 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	log.Info("OAuth resource server enabled", "issuer", cfg.BaseURL,
 		"trustedAudiences", cfg.TrustedAudiences)
 	o := &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}
-	// The REST API's callers forward the person's GitHub token themselves:
-	// a refusal names no muster sign-in.
-	rest := GitHubPin{AuthorizationServer: "https://github.com", APIURL: cfg.GitHubAPIURL}
-	if cfg.GitHub != nil {
-		if o.github, err = newGitHubGuard(*cfg.GitHub, log); err != nil {
-			return nil, err
-		}
-		rest.AuthorizationServer, rest.APIURL = cfg.GitHub.AuthorizationServer, cfg.GitHub.APIURL
-	}
-	if o.restGitHub, err = newGitHubGuard(rest, log); err != nil {
+	if o.restGitHub, err = newGitHubGuard(gitHubPair{APIURL: cfg.GitHubAPIURL}, log); err != nil {
 		return nil, err
 	}
 	return o, nil
@@ -208,24 +189,15 @@ func (o *oauthRuntime) protect(next http.Handler) http.Handler {
 	return o.handler.ValidateToken(o.attachIdentity(next))
 }
 
-// protectMCP is protect for the MCP endpoint. Pinned to the App, the GitHub
-// bearer is verified first and the forwarded ID token is what mcp-oauth
-// validates.
-func (o *oauthRuntime) protectMCP(next http.Handler) http.Handler {
-	if o.github != nil {
-		return o.github.protect(o.protect, next)
-	}
-	return o.protect(next)
-}
-
 // protectREST is protect for the REST API: the service token is the
-// platform's own caller on POST /v1/resolve, and nowhere else; a request that carries ForwardedIdentityHeader is
-// the pair agent-manager forwards on its GitHub registration, the person's
-// GitHub user token as the bearer and their ID token beside it, and goes
-// through GET /user first; any other carries the ID token as its bearer.
+// platform's own caller on POST /v1/resolve, and nowhere else; a request
+// that carries ForwardedIdentityHeader is the deprecated forwarded GitHub
+// pair agent-manager sends, the person's GitHub user token as the bearer and
+// their ID token beside it, and goes through GET /user first; any other
+// carries the ID token as its bearer.
 func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 	plain := o.protect(next)
-	pinned := o.restGitHub.protect(o.protect, next)
+	pair := o.restGitHub.protect(o.protect, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case o.cfg.ServiceToken != "" && r.Method == http.MethodPost && r.URL.Path == "/v1/resolve" &&
@@ -233,7 +205,7 @@ func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 			ctx := identity.ContextWith(identity.ContextWithService(r.Context()), &identity.Identity{Subject: "service", Source: identity.SourceService})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		case r.Header.Get(ForwardedIdentityHeader) != "":
-			pinned.ServeHTTP(w, r)
+			pair.ServeHTTP(w, r)
 		default:
 			plain.ServeHTTP(w, r)
 		}
