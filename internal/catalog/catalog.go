@@ -86,8 +86,9 @@ type Source struct {
 // Sources lists the configured sources, each with the commit its ref
 // resolves to now (cached for the cache TTL), without reading their skills.
 // A private source is listed only to a caller who can read it; the others
-// are counted in Withheld, without their URLs. Listing never asks for a
-// GitHub grant: without one, Withheld names the App that would show them.
+// are counted in Withheld, without their URLs. A source whose head cannot be
+// read is listed with its error. Listing never asks for a GitHub grant:
+// without one, Withheld names the App that would show them.
 func (s *Service) Sources(ctx context.Context) ([]Source, Withheld, error) {
 	list := s.skills.Sources()
 	out := make([]Source, len(list))
