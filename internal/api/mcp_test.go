@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/giantswarm/mcp-toolkit/brand"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,6 +97,25 @@ func TestMCPResolveSkillsRefusesUnknownFields(t *testing.T) {
 	})
 	assert.True(t, isErr)
 	assert.Contains(t, text, `unknown field "url"`)
+}
+
+// The server advertises the Giant Swarm logo as its icon, which muster shows
+// as the connector's icon.
+func TestMCPServerAdvertisesGiantSwarmIcon(t *testing.T) {
+	srv := NewMCPServer(newCatalog(), "test")
+	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{
+		"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "t", "version": "0"},
+	}})
+	require.NoError(t, err)
+	out, err := json.Marshal(srv.HandleMessage(t.Context(), raw))
+	require.NoError(t, err)
+	var parsed struct {
+		Result mcp.InitializeResult `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(out, &parsed), string(out))
+	assert.Equal(t, []mcp.Icon{brand.GiantSwarmIcon()}, parsed.Result.ServerInfo.Icons)
 }
 
 func TestToolErrorNamesTheMissingGrant(t *testing.T) {
