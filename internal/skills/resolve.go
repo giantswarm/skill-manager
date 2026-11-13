@@ -2,6 +2,8 @@ package skills
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,7 +39,6 @@ var (
 type Resolver struct {
 	gh       *github
 	registry *oci.Registry
-	signIn   string
 
 	access *lru.Cache[string, accessEntry]
 	meta   *lru.Cache[string, metaEntry]
@@ -69,14 +70,6 @@ func NewResolver(apiURL string, tokens TokenSource, client *http.Client, registr
 	}
 	return &Resolver{gh: newGitHub(apiURL, tokens, client), registry: registry,
 		access: lru.New[string, accessEntry](resolverCacheMax), meta: lru.New[string, metaEntry](resolverCacheMax)}
-}
-
-// WithSignIn names the MCP server a person connects to GitHub through
-// (core_auth_login server=<server>) in the refusal of a private repository
-// to a caller without a GitHub login: only where the GitHub pin is on.
-func (r *Resolver) WithSignIn(server string) *Resolver {
-	r.signIn = server
-	return r
 }
 
 // repository is the repository's metadata, reused for metaTTL.
@@ -133,9 +126,6 @@ func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login str
 		return nil
 	}
 	if login == "" {
-		if r.signIn != "" {
-			return fmt.Errorf("%w: %s is private and your GitHub identity is unknown, so skill-manager cannot check that you may read it; connect GitHub in muster (core_auth_login server=%s)", ErrNotReadable, repoURL, r.signIn)
-		}
 		return fmt.Errorf("%w: you cannot read %s: it is private and skill-manager knows no GitHub login of yours", ErrNotReadable, repoURL)
 	}
 	perm, err := r.gh.permission(ctx, owner, repo, login)
@@ -147,6 +137,52 @@ func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login str
 		return nil
 	}
 	return fmt.Errorf("%w: %s is private and the GitHub user %s cannot read it (permission %s); ask its owners for read access", ErrNotReadable, repoURL, login, perm)
+}
+
+// ErrUserTokenRefused marks a person's GitHub user token GitHub does not
+// accept (401): their grant is gone or expired.
+var ErrUserTokenRefused = errors.New("GitHub refused the user token")
+
+// RequireReadableAs refuses repoURL unless GitHub lets the holder of
+// userToken, the person's user token of skill-manager's GitHub App, read it.
+// Visibility is the configured token's view, shared by every caller; a
+// public repository is readable by everyone and never sends userToken. A
+// private one is readable when GET /repos/{owner}/{repo} as the person
+// answers 200; 404 and 403 are not readable. The answer is reused for
+// accessTTL per token.
+func (r *Resolver) RequireReadableAs(ctx context.Context, repoURL, userToken string) error {
+	owner, repo, err := parseRepoURL(repoURL)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnresolvable, err)
+	}
+	meta, err := r.repository(ctx, owner, repo)
+	if err != nil {
+		return r.unresolvable(ctx, repoURL, "the visibility", err)
+	}
+	if !meta.Private {
+		return nil
+	}
+	if userToken == "" {
+		return fmt.Errorf("%w: you cannot read %s: it is private and skill-manager has no GitHub grant of yours", ErrNotReadable, repoURL)
+	}
+	sum := sha256.Sum256([]byte(userToken))
+	key := "token:" + hex.EncodeToString(sum[:]) + " " + strings.ToLower(owner+"/"+repo)
+	if e, ok := r.access.Get(key); ok && time.Now().Before(e.until) {
+		return e.err
+	}
+	err = r.gh.readableBy(ctx, owner, repo, userToken)
+	var api *apiError
+	switch {
+	case err == nil:
+	case errors.As(err, &api) && api.status == http.StatusUnauthorized:
+		return fmt.Errorf("%w: %s", ErrUserTokenRefused, repoURL)
+	case errors.As(err, &api) && !api.rateLimited && (api.status == http.StatusNotFound || api.status == http.StatusForbidden):
+		err = fmt.Errorf("%w: %s is private and your GitHub account cannot read it; ask its owners for read access", ErrNotReadable, repoURL)
+	default:
+		return fmt.Errorf("%w: %w: your access to %s could not be read: %v", ErrUnresolvable, ErrUpstream, repoURL, err)
+	}
+	r.access.Add(key, accessEntry{err: err, until: time.Now().Add(accessTTL)})
+	return err
 }
 
 // GitHead resolves ref (a branch, tag or commit; empty for the default

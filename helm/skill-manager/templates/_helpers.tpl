@@ -196,3 +196,36 @@ port: {{ $port }}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+"true" when the GitHub token exchange is on: github.enabled and
+github.tokenExchange.tokenEndpoint set. Fails on a token exchange the chart
+cannot run: set while github.enabled is off, without oauth.enabled, without
+an audience, or without a client secret.
+*/}}
+{{- define "skill-manager.githubTokenExchange" -}}
+{{- $exchange := .Values.github.tokenExchange -}}
+{{- if $exchange.tokenEndpoint -}}
+{{- if not .Values.github.enabled -}}
+{{- fail "github.tokenExchange.tokenEndpoint is set while github.enabled is false: set github.enabled to check private repositories as the person" -}}
+{{- end -}}
+{{- if not .Values.oauth.enabled -}}
+{{- fail "github.tokenExchange exchanges the person's ID token, which the server validates as an OAuth resource server: set oauth.enabled" -}}
+{{- end -}}
+{{- if not $exchange.audience -}}
+{{- fail "github.tokenExchange.audience is required with github.tokenExchange.tokenEndpoint" -}}
+{{- end -}}
+{{- if not (or $exchange.existingSecret $exchange.clientSecret) -}}
+{{- fail "github.tokenExchange.existingSecret or github.tokenExchange.clientSecret is required with github.tokenExchange.tokenEndpoint" -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+The Secret with the token exchange client: github.tokenExchange.existingSecret,
+else the one the chart renders from clientSecret.
+*/}}
+{{- define "skill-manager.githubTokenExchangeSecretName" -}}
+{{- .Values.github.tokenExchange.existingSecret | default (printf "%s-github-token-exchange" (include "skill-manager.fullname" .)) -}}
+{{- end -}}

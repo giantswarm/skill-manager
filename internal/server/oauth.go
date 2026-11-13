@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/x509"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +15,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 
@@ -62,21 +61,12 @@ type OAuthConfig struct {
 	// without a token (labs only).
 	AllowPublicClientRegistration bool
 	// GitHubAPIURL is where GET /user verifies a GitHub bearer the REST API
-	// receives beside ForwardedIdentityHeader (empty: api.github.com, or
-	// GitHub.APIURL).
+	// receives beside ForwardedIdentityHeader (empty: api.github.com).
 	GitHubAPIURL string
 	// ServiceToken, when set, is a bearer the REST API admits as the
 	// platform's own service caller (identity.ContextWithService): agent-
 	// manager's migrate, which has no caller. Compared in constant time.
 	ServiceToken string
-	// GitHub, when set, pins the MCP registration to the App: the bearer on
-	// the MCP endpoint is the person's App user token and the IdP ID token
-	// arrives in ForwardedIdentityHeader (GitHubPin). The REST API takes the
-	// same pair when a caller (agent-manager forwarding the person's tokens)
-	// sends ForwardedIdentityHeader, and the IdP token alone as its bearer
-	// otherwise: the person then has no GitHub login, and private
-	// repositories are refused.
-	GitHub *GitHubPin
 }
 
 // Validate checks required fields.
@@ -105,9 +95,8 @@ type oauthRuntime struct {
 	cfg     OAuthConfig
 	mcpPath string
 	log     *slog.Logger
-	github  *gitHubGuard
 	// restGitHub verifies the GitHub bearer of a REST request that carries
-	// ForwardedIdentityHeader, pinned or not.
+	// ForwardedIdentityHeader: the deprecated forwarded GitHub pair.
 	restGitHub *gitHubGuard
 }
 
@@ -141,16 +130,7 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	log.Info("OAuth resource server enabled", "issuer", cfg.BaseURL,
 		"trustedAudiences", cfg.TrustedAudiences)
 	o := &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}
-	// The REST API's callers forward the person's GitHub token themselves:
-	// a refusal names no muster sign-in.
-	rest := GitHubPin{AuthorizationServer: "https://github.com", APIURL: cfg.GitHubAPIURL}
-	if cfg.GitHub != nil {
-		if o.github, err = newGitHubGuard(*cfg.GitHub, log); err != nil {
-			return nil, err
-		}
-		rest.AuthorizationServer, rest.APIURL = cfg.GitHub.AuthorizationServer, cfg.GitHub.APIURL
-	}
-	if o.restGitHub, err = newGitHubGuard(rest, log); err != nil {
+	if o.restGitHub, err = newGitHubGuard(gitHubPair{APIURL: cfg.GitHubAPIURL}, log); err != nil {
 		return nil, err
 	}
 	return o, nil
@@ -210,24 +190,15 @@ func (o *oauthRuntime) protect(next http.Handler) http.Handler {
 	return o.handler.ValidateToken(o.attachIdentity(next))
 }
 
-// protectMCP is protect for the MCP endpoint. Pinned to the App, the GitHub
-// bearer is verified first and the forwarded ID token is what mcp-oauth
-// validates.
-func (o *oauthRuntime) protectMCP(next http.Handler) http.Handler {
-	if o.github != nil {
-		return o.github.protect(o.protect, next)
-	}
-	return o.protect(next)
-}
-
 // protectREST is protect for the REST API: the service token is the
-// platform's own caller on POST /v1/resolve, and nowhere else; a request that carries ForwardedIdentityHeader is
-// the pair agent-manager forwards on its GitHub registration, the person's
-// GitHub user token as the bearer and their ID token beside it, and goes
-// through GET /user first; any other carries the ID token as its bearer.
+// platform's own caller on POST /v1/resolve, and nowhere else; a request
+// that carries ForwardedIdentityHeader is the deprecated forwarded GitHub
+// pair agent-manager sends, the person's GitHub user token as the bearer and
+// their ID token beside it, and goes through GET /user first; any other
+// carries the ID token as its bearer.
 func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 	plain := o.protect(next)
-	pinned := o.restGitHub.protect(o.protect, next)
+	pair := o.restGitHub.protect(o.protect, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case o.cfg.ServiceToken != "" && r.Method == http.MethodPost && r.URL.Path == "/v1/resolve" &&
@@ -235,7 +206,7 @@ func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 			ctx := identity.ContextWith(identity.ContextWithService(r.Context()), &identity.Identity{Subject: "service", Source: identity.SourceService})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		case r.Header.Get(ForwardedIdentityHeader) != "":
-			pinned.ServeHTTP(w, r)
+			pair.ServeHTTP(w, r)
 		default:
 			plain.ServeHTTP(w, r)
 		}
@@ -260,84 +231,31 @@ func (o *oauthRuntime) attachIdentity(next http.Handler) http.Handler {
 		if info.IsSSO() {
 			id.Source = identity.SourceSSO
 		}
-		if o.idToken(ctx, r, info) == "" {
+		idToken := o.idToken(ctx, r, info)
+		if idToken == "" {
 			o.refuse(w, r, id)
 			return
 		}
+		if claims, err := oidc.ParseUnverifiedClaims(idToken); err == nil {
+			if actor, exists := claims["act"]; exists && actor != nil {
+				id.Delegated = true
+			}
+		}
 		o.log.Debug("authenticated request", "caller", id.String(), "source", id.Source, "path", r.URL.Path)
-		next.ServeHTTP(w, r.WithContext(identity.ContextWith(ctx, id)))
+		next.ServeHTTP(w, r.WithContext(identity.ContextWithToken(identity.ContextWith(ctx, id), idToken)))
 	})
 }
 
-// refuse answers a request that is neither a trusted forwarded IdP token nor
-// one of this server's own tokens with 401 and names the cause. The usual one: the bearer is an IdP id_token
-// (a JWT) whose audience is not trusted — the session signed in through a
-// client this server was not told about, the portal's own for instance.
-// mcp-oauth then skipped the forwarded-id_token branch and authenticated the
-// caller through the IdP's userinfo endpoint instead (Dex answers for any
-// token it signed), which is why the caller is known but not SSO and no token
-// is in the local store. The token's aud is read without verification, for
-// the message only: mcp-oauth has authenticated the caller already and the
-// decision — 401 — does not depend on it. muster shows the WWW-Authenticate
-// description in its session hint.
+// refuse answers 401 for a caller mcp-oauth authenticated whose bearer is
+// neither a trusted forwarded IdP token nor one of this server's own tokens
+// with an IdP id_token stored next to it. An id_token for an untrusted
+// audience never gets here; mcp-oauth refuses it and logs its aud next to the
+// trusted audiences.
 func (o *oauthRuntime) refuse(w http.ResponseWriter, r *http.Request, id *identity.Identity) {
-	reason := "the bearer is neither an ID token of a trusted audience nor a token this server issued"
-	attrs := []any{"caller", id.String(), "source", id.Source, "path", r.URL.Path}
-	if aud, ok := untrustedAudience(bearerToken(r), o.cfg.TrustedAudiences); ok {
-		reason = fmt.Sprintf("token audience %v matches none of the trusted audiences %v (--oauth-trusted-audiences)", aud, o.cfg.TrustedAudiences)
-		attrs = append(attrs, "aud", aud, "trustedAudiences", o.cfg.TrustedAudiences)
-	}
-	o.log.Warn("request refused: "+reason, attrs...)
-	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="`+headerQuotedString(reason)+`"`)
+	const reason = "the bearer is neither an ID token of a trusted audience nor a token this server issued"
+	o.log.Warn("request refused: "+reason, "caller", id.String(), "source", id.Source, "path", r.URL.Path)
+	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="`+reason+`"`)
 	writeError(w, http.StatusUnauthorized, "unauthorized: "+reason)
-}
-
-// untrustedAudience is the aud claim of bearer when bearer is a JWT — the
-// shape of an IdP id_token — that names none of trusted: the IdP issued it
-// for other clients. false for opaque bearers, for JWTs without a readable
-// aud, and for tokens that do name a trusted audience (their refusal has
-// another cause).
-func untrustedAudience(bearer string, trusted []string) ([]string, bool) {
-	aud, ok := unverifiedAudience(bearer)
-	if !ok {
-		return nil, false
-	}
-	for _, a := range aud {
-		for _, t := range trusted {
-			if a == t {
-				return nil, false
-			}
-		}
-	}
-	return aud, true
-}
-
-// unverifiedAudience reads the aud claim (a string or a list) of a compact
-// JWS without verifying anything about it.
-func unverifiedAudience(token string) ([]string, bool) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, false
-	}
-	var claims struct {
-		Aud json.RawMessage `json:"aud"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil || len(claims.Aud) == 0 {
-		return nil, false
-	}
-	var one string
-	if json.Unmarshal(claims.Aud, &one) == nil && one != "" {
-		return []string{one}, true
-	}
-	var many []string
-	if json.Unmarshal(claims.Aud, &many) == nil && len(many) > 0 {
-		return many, true
-	}
-	return nil, false
 }
 
 // headerQuotedString makes s safe inside a WWW-Authenticate quoted-string

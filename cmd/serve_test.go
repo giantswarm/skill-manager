@@ -73,6 +73,17 @@ func TestServeTokenSource(t *testing.T) {
 	assert.ErrorContains(t, err, "mutually exclusive")
 }
 
+// Deprecated options keep parsing and say what replaces them.
+func TestServeDeprecations(t *testing.T) {
+	assert.Empty(t, parse(t).deprecations())
+	assert.Equal(t, []string{"--github-token (GITHUB_TOKEN) is deprecated: read skills with the GitHub App (--github-app-id)"}, parse(t, "--github-token=t0k").deprecations())
+	o := parse(t, "--github-authorization-server=https://github.com/apps/x", "--muster-server=skill-manager")
+	require.Len(t, o.deprecations(), 1)
+	assert.Contains(t, o.deprecations()[0], "--github-token-exchange-endpoint")
+	_, err := o.serverConfig()
+	require.NoError(t, err, "the ignored pin does not refuse a start")
+}
+
 func TestServeDefaults(t *testing.T) {
 	o := parse(t)
 	assert.Equal(t, ":8080", o.listen)
@@ -82,10 +93,20 @@ func TestServeDefaults(t *testing.T) {
 	assert.False(t, o.oauthEnabled)
 }
 
-// The GitHub App pin needs OAuth, which validates the ID token beside it.
-func TestServePinNeedsOAuth(t *testing.T) {
-	_, err := parse(t, "--github-authorization-server=https://github.com/apps/x").serverConfig()
+// The token exchange needs OAuth, which validates the ID token it
+// exchanges, and its options need the endpoint.
+func TestServeGitHubTokenExchangeOptions(t *testing.T) {
+	exchange := []string{"--github-token-exchange-endpoint=https://muster.example.com/oauth/token", "--github-token-exchange-audience=skill-manager-app", "--github-token-exchange-client-id-file=/mounted/client-id", "--github-token-exchange-client-secret-file=/mounted/client-secret"}
+	_, err := parse(t, exchange...).serverConfig()
 	assert.ErrorContains(t, err, "--enable-oauth")
+
+	o := parse(t, exchange...)
+	o.oauthEnabled = true
+	require.NoError(t, validateGitHubExchange(o), "the client ID may come from its file")
+	assert.Equal(t, "skill-manager-app", o.gitHubExchangeConfig().Audience)
+
+	_, err = parse(t, "--github-token-exchange-audience=skill-manager-app").serverConfig()
+	assert.ErrorContains(t, err, "--github-token-exchange-endpoint")
 }
 
 // The service token and the GitHub API reach the REST guard.

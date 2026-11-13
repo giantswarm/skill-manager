@@ -55,7 +55,7 @@ func (s *Service) allowContent(ctx context.Context, repoURL, commit, dir string)
 		return "", "", fmt.Errorf("%w: %s at %q is in no configured skill source", ErrInvalid, repoURL, dir)
 	}
 	if !identity.IsService(ctx) {
-		if err := s.pinner.RequireReadable(ctx, repoURL, gitHubLogin(ctx)); err != nil {
+		if err := s.requireReadable(ctx, repoURL, s.lazyGrant()); err != nil {
 			return "", "", classify(err)
 		}
 	}

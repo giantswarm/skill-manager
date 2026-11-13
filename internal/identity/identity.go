@@ -1,8 +1,9 @@
 // Package identity carries the authenticated caller through a request: who
-// the OAuth layer validated (subject, email, groups) and, on the App-pinned
-// registration, the person's GitHub login, which decides whether they may
-// read a private skill repository. A context without an identity only exists
-// in tests and in a server that runs without OAuth.
+// the OAuth layer validated (subject, email, groups), their IdP ID token and,
+// with the deprecated forwarded GitHub pair, their GitHub login, which
+// decides whether they may read a private skill repository. A context
+// without an identity only exists in tests and in a server that runs without
+// OAuth.
 package identity
 
 import (
@@ -37,6 +38,9 @@ type Identity struct {
 	Groups []string
 	// Source is how the token was validated.
 	Source Source
+	// Delegated is set when the caller's ID token carries an `act` claim: an
+	// agent acting for the person, never handed the person's GitHub grant.
+	Delegated bool
 }
 
 // String is the caller as logged and reported on results: the email, else
@@ -56,7 +60,23 @@ type ctxKey int
 const (
 	identityKey ctxKey = iota
 	gitHubKey
+	tokenKey
 )
+
+// ContextWithToken returns ctx carrying the caller's IdP ID token, the
+// subject token of an exchange made for them.
+func ContextWithToken(ctx context.Context, token string) context.Context {
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, tokenKey, token)
+}
+
+// TokenFromContext returns the caller's IdP ID token, if any.
+func TokenFromContext(ctx context.Context) (string, bool) {
+	token, ok := ctx.Value(tokenKey).(string)
+	return token, ok && token != ""
+}
 
 // ContextWith returns ctx carrying id.
 func ContextWith(ctx context.Context, id *Identity) context.Context {
@@ -72,9 +92,9 @@ func FromContext(ctx context.Context) (*Identity, bool) {
 	return id, ok && id != nil
 }
 
-// GitHub is the caller's GitHub identity on the App-pinned registration: the
-// login GET /user answered for the person's GitHub user token muster (or
-// agent-manager, forwarding it) put on the call, and that token.
+// GitHub is the caller's GitHub identity from the deprecated forwarded GitHub
+// pair: the login GET /user answered for the person's GitHub user token a
+// REST caller (agent-manager) put on the call, and that token.
 type GitHub struct {
 	Login string
 	Token string
