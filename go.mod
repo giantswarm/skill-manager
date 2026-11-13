@@ -3,7 +3,7 @@ module github.com/giantswarm/skill-manager
 go 1.26.0
 
 require (
-	github.com/giantswarm/mcp-oauth v1.13.5
+	github.com/giantswarm/mcp-oauth v1.13.10
 	github.com/giantswarm/mcp-toolkit v0.5.3
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/golang-jwt/jwt/v5 v5.3.1
