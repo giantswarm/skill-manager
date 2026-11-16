@@ -42,9 +42,6 @@ type OAuthConfig struct {
 	// DexCAFile is a PEM CA bundle for an IdP with a private certificate;
 	// verifies discovery, token and JWKS calls. Empty: system trust.
 	DexCAFile string
-	// DexAllowPrivateIP lets the issuer resolve to a private/loopback address
-	// (an in-cluster Dex).
-	DexAllowPrivateIP bool
 
 	// TrustedAudiences are the OAuth client ids whose IdP id_tokens are
 	// accepted as bearers (SSO token forwarding): the platform client, and
@@ -138,13 +135,12 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 
 func newProvider(cfg OAuthConfig, rootCAs *x509.CertPool, log *slog.Logger) (providers.Provider, error) {
 	p, err := dex.NewProvider(&dex.Config{
-		IssuerURL:      cfg.DexIssuerURL,
-		ClientID:       cfg.DexClientID,
-		ClientSecret:   cfg.DexClientSecret,
-		RedirectURL:    strings.TrimSuffix(cfg.BaseURL, "/") + "/oauth/callback",
-		AllowPrivateIP: cfg.DexAllowPrivateIP,
-		RootCAs:        rootCAs,
-		Logger:         log,
+		IssuerURL:    cfg.DexIssuerURL,
+		ClientID:     cfg.DexClientID,
+		ClientSecret: cfg.DexClientSecret,
+		RedirectURL:  strings.TrimSuffix(cfg.BaseURL, "/") + "/oauth/callback",
+		RootCAs:      rootCAs,
+		Logger:       log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("oauth: dex provider: %w", err)
