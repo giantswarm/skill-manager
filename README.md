@@ -4,4 +4,5 @@ Owns the Agent Platform's skill sources: lists their skills and pins skills and 
 
 - Tools: [docs/tools.md](docs/tools.md)
 - REST API: [docs/api.md](docs/api.md)
+- OAuth upgrades: [migration](docs/oauth-migration.md)
 - Configuration: the chart's [values](helm/skill-manager/values.yaml) — `sources`, `github`, `cacheTTL`, `oauth`, `muster.mcpServer`, `serviceToken`.

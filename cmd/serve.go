@@ -91,6 +91,12 @@ func newServe() (*cobra.Command, *serveOptions) {
 		Short: "Run the MCP server and the REST API",
 		Long: `Run the skill-manager server. Every flag can also be set through the
 environment variable named next to it; flags win over the environment.`,
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			if o.dexAllowPrivateIP {
+				return errors.New("--allow-private-oauth-urls (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS) is no longer supported: remove it; the Dex client reaches private addresses and follows HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServe(cmd.Context(), o)
 		},
@@ -124,7 +130,8 @@ environment variable named next to it; flags win over the environment.`,
 	f.StringVar(&o.dexClientID, "dex-client-id", envOr("DEX_CLIENT_ID", ""), "Dex client ID (DEX_CLIENT_ID)")
 	f.StringVar(&o.dexClientSecret, "dex-client-secret", envOr("DEX_CLIENT_SECRET", ""), "Dex client secret; prefer the environment (DEX_CLIENT_SECRET)")
 	f.StringVar(&o.dexCAFile, "dex-ca-file", envOr("DEX_CA_FILE", ""), "PEM CA bundle of a Dex with a private certificate; verifies discovery, token and JWKS calls (DEX_CA_FILE)")
-	f.BoolVar(&o.dexAllowPrivateIP, "allow-private-oauth-urls", envBool(o.envErrs, "allow-private-oauth-urls", "SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS", false), "Deprecated, no effect: the Dex client reaches private addresses and follows HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS)")
+	f.BoolVar(&o.dexAllowPrivateIP, "allow-private-oauth-urls", envBool(o.envErrs, "allow-private-oauth-urls", "SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS", false), "Obsolete; true is refused. Remove this setting (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS)")
+	_ = f.MarkDeprecated("allow-private-oauth-urls", "remove it; Dex reaches private addresses and follows the proxy environment without it")
 	f.StringVar(&o.oauthTrustedAudiences, "oauth-trusted-audiences", envOr("OAUTH_TRUSTED_AUDIENCES", ""), "Comma-separated OAuth client IDs whose Dex id_tokens are accepted as bearer tokens: the platform client and the audiences muster requires (OAUTH_TRUSTED_AUDIENCES)")
 	f.BoolVar(&o.ssoAllowPrivateIPs, "sso-allow-private-ips", envBool(o.envErrs, "sso-allow-private-ips", "SSO_ALLOW_PRIVATE_IPS", false), "Let Dex's JWKS endpoint resolve to a private address when validating forwarded tokens (SSO_ALLOW_PRIVATE_IPS)")
 	f.BoolVar(&o.allowPublicClientRegistration, "allow-public-client-registration", envBool(o.envErrs, "allow-public-client-registration", "SKILL_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION", false), "Accept unauthenticated dynamic client registration; labs only (SKILL_MANAGER_OAUTH_ALLOW_PUBLIC_REGISTRATION)")
@@ -183,15 +190,8 @@ func (o *serveOptions) serverConfig() (server.Config, error) {
 	return cfg, nil
 }
 
-func warnDeprecatedOAuthOptions(o *serveOptions, log *slog.Logger) {
-	if o.dexAllowPrivateIP {
-		log.Warn("--allow-private-oauth-urls (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS) has no effect and will be removed: the Dex client reaches private addresses and follows HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it")
-	}
-}
-
 func runServe(ctx context.Context, o *serveOptions) error {
 	log := slog.Default()
-	warnDeprecatedOAuthOptions(o, log)
 
 	// A configuration error fails the start, before anything else is built.
 	if err := o.envErr(); err != nil {

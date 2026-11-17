@@ -1,3 +1,6 @@
+{{- if .Values.oauth.dex.allowPrivateURLs }}
+{{- fail "oauth.dex.allowPrivateURLs=true is no longer supported: remove it; Dex reaches private addresses and follows the proxy environment without it" }}
+{{- end }}
 {{- if and .Values.serviceToken.secretName (not .Values.oauth.enabled) }}
 {{- fail "serviceToken.secretName needs oauth.enabled: without it the API admits everyone" }}
 {{- end }}
@@ -65,9 +68,6 @@ spec:
             - --dex-client-id={{ include "skill-manager.oauthDexClientID" . }}
             {{- with include "skill-manager.oauthTrustedAudiences" . }}
             - --oauth-trusted-audiences={{ . }}
-            {{- end }}
-            {{- if .Values.oauth.dex.allowPrivateURLs }}
-            - --allow-private-oauth-urls=true
             {{- end }}
             {{- if include "skill-manager.oauthDexCASecretName" . }}
             - --dex-ca-file=/etc/skill-manager/idp-ca/{{ include "skill-manager.oauthDexCASecretKey" . }}
