@@ -161,7 +161,7 @@ func TestCommitExists(t *testing.T) {
 func TestResolverReusesRepositoryMetadata(t *testing.T) {
 	gh, _ := wrapGitHub(t)
 	r := NewResolver(gh.URL, StaticToken("secret"), nil, nil)
-	require.NoError(t, r.RequireReadable(t.Context(), agentSkills, "alice"))
+	require.NoError(t, r.RequireReadable(t.Context(), agentSkills))
 	_, err := r.GitHead(t.Context(), agentSkills, "")
 	require.NoError(t, err)
 	n := 0

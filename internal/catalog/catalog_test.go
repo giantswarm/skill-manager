@@ -20,8 +20,9 @@ func newService(sources ...skills.Source) (*Service, *catalogtest.Pinner) {
 	return New(skills.New(skills.Config{Repositories: sources}, nil), p), p
 }
 
-func asAlice(ctx context.Context) context.Context {
-	return identity.ContextWithGitHub(ctx, &identity.GitHub{Login: "alice", Token: "gh-alice"})
+// asAlice is svc fetching alice's grant, which reads the private repository.
+func asAlice(svc *Service) *Service {
+	return svc.WithGitHubGrant((&grantUser{token: "ghu-alice"}).grant())
 }
 
 func gitSkill(name, url, ref, path string) Item {
@@ -104,7 +105,7 @@ func TestResolveRefusals(t *testing.T) {
 		"unknown ref":                        {Request{Skills: []Item{gitSkill("a", catalogtest.SkillsRepo, "", "a"), gitSkill("x", catalogtest.SkillsRepo, "nope", "x")}}, ErrNotFound, "skills", 1},
 		"missing path":                       {Request{Plugins: []Item{{Path: "missing", Git: &Git{URL: catalogtest.SkillsRepo}}}}, ErrNotFound, "plugins", 0},
 		"unknown image tag":                  {Request{Skills: []Item{{Name: "x", OCI: &OCI{Ref: "ghcr.io/giantswarm/skills/kubectl:9"}}}}, ErrNotFound, "skills", 0},
-		"private, not alice":                 {Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}}, ErrForbidden, "skills", 0},
+		"private, no grant":                  {Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}}, ErrForbidden, "skills", 0},
 		"GitHub fails":                       {Request{Skills: []Item{gitSkill("x", "https://github.com/giantswarm/down", "", "")}}, ErrUpstream, "skills", 0},
 		"plugin without source":              {Request{Plugins: []Item{{Path: "p"}}}, ErrInvalid, "plugins", 0},
 		"ref climbing to another repository": {Request{Skills: []Item{gitSkill("x", catalogtest.SkillsRepo, "../../../../repos/giantswarm/private/commits/main", "")}}, ErrInvalid, "skills", 0},
@@ -151,14 +152,6 @@ func TestResolveChecksADigestsRegistry(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalid)
 }
 
-// A private repository is pinned for a person who can read it.
-func TestResolvePinsAPrivateRepositoryForItsReader(t *testing.T) {
-	svc, _ := newService()
-	got, err := svc.Resolve(asAlice(t.Context()), Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}})
-	require.NoError(t, err)
-	assert.Equal(t, catalogtest.MainHead, got.Skills[0].Git.Commit)
-}
-
 // A private repository is listed only to a person who can read it; anyone
 // else gets a count of what was withheld, never its URL.
 func TestListWithholdsPrivateRepositories(t *testing.T) {
@@ -175,7 +168,7 @@ func TestListWithholdsPrivateRepositories(t *testing.T) {
 	assert.Equal(t, []skills.Repository{repos[0]}, res.Repositories)
 	assert.Equal(t, Withheld{Partial: true, Withheld: 1, Note: noteWithheld}, res.Withheld)
 
-	res, err = svc.List(asAlice(t.Context()), catalogtest.PrivateRepo, true)
+	res, err = asAlice(New(catalogtest.Lister{Repos: repos}, p)).List(t.Context(), catalogtest.PrivateRepo, true)
 	require.NoError(t, err)
 	assert.Equal(t, []skills.Repository{repos[1]}, res.Repositories)
 }
@@ -198,7 +191,7 @@ func TestSourcesReportTheirCommit(t *testing.T) {
 	}, got, "a private source the caller cannot read is not named")
 	assert.Equal(t, Withheld{Partial: true, Withheld: 1, Note: noteWithheld}, withheld)
 
-	got, withheld, err = svc.Sources(asAlice(t.Context()))
+	got, withheld, err = asAlice(New(catalogtest.Lister{Repos: repos}, p)).Sources(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, catalogtest.MainHead, got[1].Commit)
 	assert.Equal(t, Withheld{}, withheld)
@@ -378,15 +371,4 @@ func TestPinningAPrivateRepositoryAsksForTheGrant(t *testing.T) {
 	_, err = svc.Resolve(t.Context(), Request{Skills: []Item{gitSkill("y", catalogtest.SkillsRepo, "", "")}})
 	require.NoError(t, err)
 	assert.Zero(t, user.calls, "a public repository never fetches the grant")
-}
-
-// The forwarded GitHub pair's login decides on its own: the grant is never
-// fetched for it.
-func TestForwardedLoginNeverFetchesTheGrant(t *testing.T) {
-	user := &grantUser{token: "ghu-bob"}
-	svc, _ := newService()
-	svc.WithGitHubGrant(user.grant())
-	_, err := svc.Resolve(asAlice(t.Context()), Request{Skills: []Item{gitSkill("x", catalogtest.PrivateRepo, "", "")}})
-	require.NoError(t, err)
-	assert.Zero(t, user.calls)
 }

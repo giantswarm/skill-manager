@@ -7,10 +7,9 @@ The MCP tools' semantics over HTTP ([tools.md](tools.md)), on the same port (808
 With `oauth.enabled`, every call carries one of:
 
 - the person's Dex ID token as the bearer (the portal, agent-manager, muster): private repositories are refused unless `github.tokenExchange` is set; then, for a private repository only, the person's user token of skill-manager's GitHub App is fetched from muster's RFC 8693 broker and GitHub decides as the person: `GET /repos/{owner}/{repo}` with that token answers `200` (readable) or `404`/`403` (not readable). A public repository never fetches it;
-- deprecated: the person's GitHub user token as the bearer and their ID token in `X-Muster-Id-Token` (agent-manager on its GitHub registration): the token's login (`GET /user`) opens the private repositories it has read permission on;
 - on `POST /v1/resolve` only, the service token (`serviceToken`): the platform's own caller, for agent-manager's `migrate`; no readability check.
 
-Anything else is `401`. The ID token is validated before GitHub is asked about a GitHub token; GitHub failing that check (its rate limit included) is `502`. Every refusal is a JSON `{"error": "..."}`. A missing GitHub grant is not a bearer problem: it is `403` with `"code": "grant_required"`, `apps: [app]` and `message`, as muster's MCP `grant_required` result names them.
+Anything else is `401`. Every refusal is a JSON `{"error": "..."}`. A missing GitHub grant is not a bearer problem: it is `403` with `"code": "grant_required"`, `apps: [app]` and `message`, as muster's MCP `grant_required` result names them.
 
 ## Endpoints
 

@@ -34,8 +34,8 @@ type GitHubGrant struct {
 }
 
 // WithGitHubGrant lets GitHub decide, as the person, about a private
-// repository when the call carries no GitHub login: their user token is
-// fetched and GitHub asked whether it can read the repository.
+// repository: their user token is fetched and GitHub asked whether it can
+// read the repository.
 func (s *Service) WithGitHubGrant(grant GitHubGrant) *Service {
 	s.gitHubGrant = &grant
 	return s
@@ -101,16 +101,13 @@ func (l *lazyGrant) get(ctx context.Context) (string, error) {
 	return l.token, l.err
 }
 
-// requireReadable decides whether the caller may read repoURL. A caller with
-// a verified GitHub login (the forwarded GitHub pair) is checked by that
-// login. Otherwise a public repository is readable without asking anyone,
-// and for a private one, with a grant configured, GitHub decides as the
-// person: their user token is fetched (grant) and GitHub asked whether it
-// reads the repository.
+// requireReadable decides whether the caller may read repoURL. A public
+// repository is readable without asking anyone; for a private one, with a
+// grant configured, GitHub decides as the person: their user token is
+// fetched (grant) and GitHub asked whether it reads the repository.
 func (s *Service) requireReadable(ctx context.Context, repoURL string, grant *lazyGrant) error {
-	known := gitHubLogin(ctx)
-	err := s.pinner.RequireReadable(ctx, repoURL, known)
-	if known != "" || grant == nil || !errors.Is(err, skills.ErrNotReadable) {
+	err := s.pinner.RequireReadable(ctx, repoURL)
+	if grant == nil || !errors.Is(err, skills.ErrNotReadable) {
 		return err
 	}
 	token, err := grant.get(ctx)

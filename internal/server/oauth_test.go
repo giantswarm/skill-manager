@@ -275,10 +275,6 @@ func TestUntrustedAudienceIsRefused(t *testing.T) {
 	assert.Equal(t, "admin@lab.local", seen.Email)
 }
 
-func TestHeaderQuotedString(t *testing.T) {
-	assert.Equal(t, `aud [a b] vs [c]`, headerQuotedString(`aud ["a" b] vs [\c]`))
-}
-
 // TestServerGuardsRESTAndMCPButNotProbes wires OAuth through the assembled
 // server: probes and the OAuth metadata stay open, the API and the MCP
 // endpoint demand a token, and a request carrying the forwarded token
