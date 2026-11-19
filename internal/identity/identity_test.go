@@ -22,14 +22,3 @@ func TestContextRoundTrip(t *testing.T) {
 	assert.Equal(t, "", (*Identity)(nil).String())
 	assert.Same(t, ctx, ContextWith(ctx, nil), "a nil identity adds nothing")
 }
-
-func TestGitHubRoundTrip(t *testing.T) {
-	ctx := t.Context()
-	_, ok := GitHubFromContext(ctx)
-	assert.False(t, ok)
-	assert.Same(t, ctx, ContextWithGitHub(ctx, &GitHub{Login: "alice"}), "no token adds nothing")
-	ctx = ContextWithGitHub(ctx, &GitHub{Login: "alice", Token: "gh"})
-	gh, ok := GitHubFromContext(ctx)
-	require.True(t, ok)
-	assert.Equal(t, "alice", gh.Login)
-}

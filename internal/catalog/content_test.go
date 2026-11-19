@@ -34,7 +34,7 @@ func TestSkillContentRefusals(t *testing.T) {
 		{name: "outside the source path", url: catalogtest.SkillsRepo, commit: catalogtest.MainHead, path: "demo/x", wantErr: ErrInvalid},
 		{name: "climbing", url: catalogtest.SkillsRepo, commit: catalogtest.MainHead, path: "skills/../demo", wantErr: ErrInvalid},
 		{name: "not a configured repository", url: "https://github.com/acme/other", commit: catalogtest.MainHead, path: "", wantErr: ErrInvalid},
-		{name: "private, no GitHub login", url: catalogtest.PrivateRepo, commit: catalogtest.MainHead, path: "x", wantErr: ErrForbidden},
+		{name: "private, no grant", url: catalogtest.PrivateRepo, commit: catalogtest.MainHead, path: "x", wantErr: ErrForbidden},
 		{name: "missing", url: catalogtest.SkillsRepo, commit: catalogtest.MainHead, path: "skills/missing", wantErr: ErrNotFound},
 	}
 	svc := contentService()
@@ -58,7 +58,7 @@ func TestSkillContentRefusals(t *testing.T) {
 
 func TestSkillContentOfAPrivateRepositoryForItsReaders(t *testing.T) {
 	svc := contentService()
-	_, err := svc.Skill(asAlice(t.Context()), catalogtest.PrivateRepo, catalogtest.MainHead, "x")
+	_, err := asAlice(contentService()).Skill(t.Context(), catalogtest.PrivateRepo, catalogtest.MainHead, "x")
 	require.NoError(t, err)
 	_, err = svc.Skill(identity.ContextWithService(t.Context()), catalogtest.PrivateRepo, catalogtest.MainHead, "x")
 	require.NoError(t, err)

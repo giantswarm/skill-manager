@@ -75,12 +75,17 @@ tests:
               - dex-k8s-authenticator
 
   - it: names no provider App without the token exchange
+    asserts:
+      - notExists:
+          path: spec.auth.providerApps
+
+  - it: refuses github.enabled without the token exchange
     set:
       github:
         enabled: true
     asserts:
-      - notExists:
-          path: spec.auth.providerApps
+      - failedTemplate:
+          errorMessage: "github.enabled needs github.tokenExchange: private repositories are checked with the person's grant of the GitHub App, fetched from muster's broker; set github.tokenExchange.tokenEndpoint, audience and existingSecret"
 
   - it: refuses the token exchange while github.enabled is false
     set:
@@ -92,24 +97,6 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "github.tokenExchange.tokenEndpoint is set while github.enabled is false: set github.enabled to check private repositories as the person"
-
-  - it: accepts and ignores the deprecated GitHub pin values
-    set:
-      muster:
-        mcpServer:
-          auth:
-            github:
-              enabled: true
-              authorizationServer:
-                issuer: https://github.com/apps/giantswarm-agent-manager
-    asserts:
-      - equal:
-          path: spec.auth
-          value:
-            type: oauth
-            forwardToken: true
-            requiredAudiences:
-              - dex-k8s-authenticator
 
   - it: refuses an audience muster cannot name a provider App by
     set:

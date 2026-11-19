@@ -12,7 +12,6 @@ import (
 
 	"github.com/giantswarm/skill-manager/internal/catalog"
 	"github.com/giantswarm/skill-manager/internal/catalog/catalogtest"
-	"github.com/giantswarm/skill-manager/internal/identity"
 	"github.com/giantswarm/skill-manager/internal/skills"
 )
 
@@ -98,19 +97,6 @@ func TestRESTResolveRefusals(t *testing.T) {
 	assert.NotContains(t, out, "item", "a body that does not parse names no item")
 	status, _ = post(t, ts.URL+"/v1/resolve", `{"skills": [], "unknown": 1}`)
 	assert.Equal(t, http.StatusBadRequest, status, "an unknown field is refused")
-}
-
-// The caller's GitHub login opens a private repository they can read.
-func TestRESTResolveActsAsTheCaller(t *testing.T) {
-	mux := http.NewServeMux()
-	NewREST(newCatalog(), nil).Register(mux)
-	asAlice := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mux.ServeHTTP(w, r.WithContext(identity.ContextWithGitHub(r.Context(), &identity.GitHub{Login: "alice", Token: "gh"})))
-	})
-	ts := httptest.NewServer(asAlice)
-	defer ts.Close()
-	status, out := post(t, ts.URL+"/v1/resolve", `{"skills":[{"name":"x","git":{"url":"`+catalogtest.PrivateRepo+`"}}]}`)
-	assert.Equal(t, http.StatusOK, status, out)
 }
 
 // GET /v1/sources and GET /v1/skills read the discovery.

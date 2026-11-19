@@ -1,9 +1,8 @@
 // Package catalog is skill-manager's service: the configured skill sources,
 // the skills they hold, and the pins agents mount them by. The MCP tools and
 // the REST API are two views of it; both act for the caller. GitHub decides
-// whether a private repository is theirs to read: as the person, with their
-// user token of skill-manager's GitHub App (GitHubGrant), or by the login of
-// the GitHub token a REST caller forwards (identity.GitHub).
+// whether a private repository is theirs to read, as the person, with their
+// user token of skill-manager's GitHub App (GitHubGrant).
 package catalog
 
 import (
@@ -51,7 +50,7 @@ type Lister interface {
 type Pinner interface {
 	GitHead(ctx context.Context, repoURL, ref string) (string, error)
 	OCIDigest(ctx context.Context, ref string) (string, error)
-	RequireReadable(ctx context.Context, repoURL, login string) error
+	RequireReadable(ctx context.Context, repoURL string) error
 	RequireReadableAs(ctx context.Context, repoURL, userToken string) error
 	ClaudeFormatPlugin(ctx context.Context, repoURL, commit, path string) (bool, error)
 	PathExists(ctx context.Context, repoURL, commit, path string) (bool, error)
@@ -62,8 +61,8 @@ type Pinner interface {
 type Service struct {
 	skills Lister
 	pinner Pinner
-	// gitHubGrant fetches the person's grant for a private repository when
-	// the call carries no GitHub login (nil: the forwarded pair's login only).
+	// gitHubGrant fetches the person's grant for a private repository (nil:
+	// private repositories are refused).
 	gitHubGrant *GitHubGrant
 }
 
@@ -478,12 +477,4 @@ func classify(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w: %w", ErrInvalid, err)
-}
-
-// gitHubLogin is the caller's verified GitHub login, "" without one.
-func gitHubLogin(ctx context.Context) string {
-	if gh, ok := identity.GitHubFromContext(ctx); ok {
-		return gh.Login
-	}
-	return ""
 }

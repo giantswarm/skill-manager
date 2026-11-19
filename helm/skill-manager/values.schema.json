@@ -83,7 +83,7 @@
             "properties": {
                 "apiUrl": {
                     "type": "string",
-                    "description": "GitHub API base URL: discovery, pinning, the person's access to a private repository, and `GET /user` for a forwarded GitHub token."
+                    "description": "GitHub API base URL: discovery, pinning, the person's access to a private repository."
                 },
                 "app": {
                     "type": "object",
@@ -97,7 +97,7 @@
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Private skill repositories, checked as the person: GitHub decides whether they can read one. With `tokenExchange`, the MCP tools and the REST API fetch the person's user token of skill-manager's GitHub App (`app`) for a private repository only and ask GitHub as them. Off: `tokenExchange` is refused."
+                    "description": "Private skill repositories, checked as the person: GitHub decides whether they can read one. With `tokenExchange`, the MCP tools and the REST API fetch the person's user token of skill-manager's GitHub App (`app`) for a private repository only and ask GitHub as them. Needs `tokenExchange`. Off: `tokenExchange` is refused, and private repositories are refused."
                 },
                 "tokenExchange": {
                     "type": "object",
@@ -239,11 +239,6 @@
                                 "forwardToken": {
                                     "type": "boolean"
                                 },
-                                "github": {
-                                    "type": "object",
-                                    "description": "Deprecated and ignored: the GitHub App pin is replaced by `github.tokenExchange`, which fetches the person's grant only for a private repository.",
-                                    "additionalProperties": true
-                                },
                                 "requiredAudiences": {
                                     "type": "array"
                                 }
@@ -367,7 +362,7 @@
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Make skill-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint and the REST API require a bearer token Dex issued, validated against Dex's JWKS when its audience is in `trustedAudiences`. muster forwards the session's Dex id_token (`muster.mcpServer.auth`); agent-manager and the portal forward the person's. Deprecated: a REST call may instead carry the person's GitHub token as the bearer and the id_token in `X-Muster-Id-Token`, as agent-manager forwards them on its GitHub registration: the GitHub login then opens the private repositories the person can read. Off: no authentication at all, and private repositories are refused; only for a server nothing but a trusted proxy can reach. Off by default only because it needs the installation's Dex: the `agent-platform` meta chart turns it on."
+                    "description": "Make skill-manager an OAuth 2.1 resource server (mcp-oauth): the MCP endpoint and the REST API require a bearer token Dex issued, validated against Dex's JWKS when its audience is in `trustedAudiences`. muster forwards the session's Dex id_token (`muster.mcpServer.auth`); agent-manager and the portal forward the person's. Off: no authentication at all, and private repositories are refused; only for a server nothing but a trusted proxy can reach. Off by default only because it needs the installation's Dex: the `agent-platform` meta chart turns it on."
                 },
                 "existingSecret": {
                     "type": "string",
