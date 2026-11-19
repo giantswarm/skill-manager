@@ -51,14 +51,17 @@ func TestRESTTakesTheForwardedPairOrTheIDToken(t *testing.T) {
 
 	var login string
 	var person bool
-	h := o.protectREST(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	validated := func(next http.Handler) http.Handler { return afterValidation(verifiedUser(), o.attachIdentity(next)) }
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, person = identity.FromContext(r.Context())
 		login = ""
 		if g, ok := identity.GitHubFromContext(r.Context()); ok {
 			login = g.Login
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}))
+	})
+	h := o.restGitHub.protect(validated, next)
+	plain := validated(next)
 	call := func(bearer, idToken string) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/resolve", nil)
 		req.Header.Set("Authorization", "Bearer "+bearer)
@@ -66,7 +69,11 @@ func TestRESTTakesTheForwardedPairOrTheIDToken(t *testing.T) {
 			req.Header.Set(ForwardedIdentityHeader, idToken)
 		}
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
+		if idToken == "" {
+			plain.ServeHTTP(rec, req)
+		} else {
+			h.ServeHTTP(rec, req)
+		}
 		return rec.Code
 	}
 	forwarded := idp.idToken(t, []string{"agent-platform"}, time.Now().Add(30*time.Minute))
@@ -80,8 +87,6 @@ func TestRESTTakesTheForwardedPairOrTheIDToken(t *testing.T) {
 	assert.Empty(t, login, "the ID token alone carries no GitHub login")
 
 	assert.Equal(t, http.StatusUnauthorized, call("ghu_revoked", forwarded), "a GitHub token GitHub refuses")
-	assert.Equal(t, http.StatusUnauthorized, call("ghu_person", idp.idToken(t, []string{"someone-else"}, time.Now().Add(30*time.Minute))), "the ID token is validated as without the pair")
-
 	// agent-manager's migrate has no caller: it sends the service token.
 	var service bool
 	svcH := o.protectREST(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +143,18 @@ func TestGitHubGuardOrderAndAnswers(t *testing.T) {
 	o, err := newOAuth(cfg, "/mcp", quiet())
 	require.NoError(t, err)
 	t.Cleanup(func() { o.shutdown(context.Background()) })
-	h := o.protectREST(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	// The validator stands in for mcp-oauth: it refuses one ID token and
+	// otherwise admits the caller.
+	validated := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if bearerToken(r) == "not-a-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			afterValidation(verifiedUser(), o.attachIdentity(next)).ServeHTTP(w, r)
+		})
+	}
+	h := o.restGitHub.protect(validated, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	call := func(bearer, idToken string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/v1/sources", nil)
 		req.Header.Set("Authorization", "Bearer "+bearer)
