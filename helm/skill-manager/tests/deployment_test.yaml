@@ -112,9 +112,6 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --enable-oauth=true
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --github-authorization-server=https://github.com/apps/giantswarm-agent-manager
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -212,9 +209,6 @@ tests:
               defaultMode: 0440
 
   - it: renders no token exchange while it is unset
-    set:
-      github:
-        enabled: true
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].args

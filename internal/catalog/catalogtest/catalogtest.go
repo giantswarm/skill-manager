@@ -72,10 +72,10 @@ func (p *Pinner) OCIDigest(_ context.Context, ref string) (string, error) {
 	return "", fmt.Errorf("%w: %w: OCI skill %s", skills.ErrUnresolvable, skills.ErrNotFound, ref)
 }
 
-func (p *Pinner) RequireReadable(_ context.Context, repoURL, login string) error {
-	p.record("readable " + repoURL + " " + login)
-	if repoURL == PrivateRepo && login != "alice" {
-		return fmt.Errorf("%w: %s is private and %q cannot read it", skills.ErrNotReadable, repoURL, login)
+func (p *Pinner) RequireReadable(_ context.Context, repoURL string) error {
+	p.record("readable " + repoURL)
+	if repoURL == PrivateRepo {
+		return fmt.Errorf("%w: %s is private", skills.ErrNotReadable, repoURL)
 	}
 	if repoURL == MissingRepo {
 		return fmt.Errorf("%w: %w: %s: GitHub answered 404", skills.ErrUnresolvable, skills.ErrNotFound, repoURL)

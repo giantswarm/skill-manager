@@ -94,22 +94,20 @@ type accessEntry struct {
 	until time.Time
 }
 
-// RequireReadable refuses repoURL unless login can read it. A public
-// repository is readable by everyone; a private one needs login's read
-// permission or more, which GitHub reports for the configured token's view of
-// the repository. An empty login (a caller without a verified GitHub
-// identity) can use public repositories only.
-func (r *Resolver) RequireReadable(ctx context.Context, repoURL, login string) error {
+// RequireReadable refuses a private repoURL: a public repository is
+// readable by everyone, and a private one only through RequireReadableAs,
+// with the person's own token.
+func (r *Resolver) RequireReadable(ctx context.Context, repoURL string) error {
 	owner, repo, err := parseRepoURL(repoURL)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnresolvable, err)
 	}
-	key := strings.ToLower(login + " " + owner + "/" + repo)
+	key := strings.ToLower(owner + "/" + repo)
 	e, ok := r.access.Get(key)
 	if ok && time.Now().Before(e.until) {
 		return e.err
 	}
-	err = r.readable(ctx, repoURL, owner, repo, login)
+	err = r.readable(ctx, repoURL, owner, repo)
 	if err != nil && !errors.Is(err, ErrNotReadable) {
 		return err // a failed lookup is not cached
 	}
@@ -117,26 +115,15 @@ func (r *Resolver) RequireReadable(ctx context.Context, repoURL, login string) e
 	return err
 }
 
-func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo, login string) error {
+func (r *Resolver) readable(ctx context.Context, repoURL, owner, repo string) error {
 	meta, err := r.repository(ctx, owner, repo)
 	if err != nil {
 		return r.unresolvable(ctx, repoURL, "the visibility", err)
 	}
-	if !meta.Private {
-		return nil
+	if meta.Private {
+		return fmt.Errorf("%w: %s is private: skill-manager checks it with your GitHub grant (github.tokenExchange)", ErrNotReadable, repoURL)
 	}
-	if login == "" {
-		return fmt.Errorf("%w: you cannot read %s: it is private and skill-manager knows no GitHub login of yours", ErrNotReadable, repoURL)
-	}
-	perm, err := r.gh.permission(ctx, owner, repo, login)
-	if err != nil {
-		return fmt.Errorf("%w: %w: the permission of %s on %s could not be read: %v", ErrUnresolvable, ErrUpstream, login, repoURL, err)
-	}
-	switch perm {
-	case "admin", "maintain", "write", "triage", "read":
-		return nil
-	}
-	return fmt.Errorf("%w: %s is private and the GitHub user %s cannot read it (permission %s); ask its owners for read access", ErrNotReadable, repoURL, login, perm)
+	return nil
 }
 
 // ErrUserTokenRefused marks a person's GitHub user token GitHub does not

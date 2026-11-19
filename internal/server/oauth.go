@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -54,9 +55,6 @@ type OAuthConfig struct {
 	// AllowPublicClientRegistration lets MCP clients register over DCR
 	// without a token (labs only).
 	AllowPublicClientRegistration bool
-	// GitHubAPIURL is where GET /user verifies a GitHub bearer the REST API
-	// receives beside ForwardedIdentityHeader (empty: api.github.com).
-	GitHubAPIURL string
 	// ServiceToken, when set, is a bearer the REST API admits as the
 	// platform's own service caller (identity.ContextWithService): agent-
 	// manager's migrate, which has no caller. Compared in constant time.
@@ -89,9 +87,6 @@ type oauthRuntime struct {
 	cfg     OAuthConfig
 	mcpPath string
 	log     *slog.Logger
-	// restGitHub verifies the GitHub bearer of a REST request that carries
-	// ForwardedIdentityHeader: the deprecated forwarded GitHub pair.
-	restGitHub *gitHubGuard
 }
 
 func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime, error) {
@@ -114,11 +109,7 @@ func newOAuth(cfg OAuthConfig, mcpPath string, log *slog.Logger) (*oauthRuntime,
 	}
 	log.Info("OAuth resource server enabled", "issuer", cfg.BaseURL,
 		"trustedAudiences", cfg.TrustedAudiences)
-	o := &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}
-	if o.restGitHub, err = newGitHubGuard(gitHubPair{APIURL: cfg.GitHubAPIURL}, log); err != nil {
-		return nil, err
-	}
-	return o, nil
+	return &oauthRuntime{server: srv, handler: handler.New(srv, log), store: store, cfg: cfg, mcpPath: mcpPath, log: log}, nil
 }
 
 // serverConfig is the mcp-oauth server configuration for cfg: this server's
@@ -189,25 +180,18 @@ func (o *oauthRuntime) protect(next http.Handler) http.Handler {
 }
 
 // protectREST is protect for the REST API: the service token is the
-// platform's own caller on POST /v1/resolve, and nowhere else; a request
-// that carries ForwardedIdentityHeader is the deprecated forwarded GitHub
-// pair agent-manager sends, the person's GitHub user token as the bearer and
-// their ID token beside it, and goes through GET /user first; any other
-// carries the ID token as its bearer.
+// platform's own caller on POST /v1/resolve, and nowhere else; any other
+// request carries the person's ID token as its bearer.
 func (o *oauthRuntime) protectREST(next http.Handler) http.Handler {
 	plain := o.protect(next)
-	pair := o.restGitHub.protect(o.protect, next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case o.cfg.ServiceToken != "" && r.Method == http.MethodPost && r.URL.Path == "/v1/resolve" &&
-			subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(o.cfg.ServiceToken)) == 1:
+		if o.cfg.ServiceToken != "" && r.Method == http.MethodPost && r.URL.Path == "/v1/resolve" &&
+			subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(o.cfg.ServiceToken)) == 1 {
 			ctx := identity.ContextWith(identity.ContextWithService(r.Context()), &identity.Identity{Subject: "service", Source: identity.SourceService})
 			next.ServeHTTP(w, r.WithContext(ctx))
-		case r.Header.Get(ForwardedIdentityHeader) != "":
-			pair.ServeHTTP(w, r)
-		default:
-			plain.ServeHTTP(w, r)
+			return
 		}
+		plain.ServeHTTP(w, r)
 	})
 }
 
@@ -254,12 +238,6 @@ func (o *oauthRuntime) refuse(w http.ResponseWriter, r *http.Request, id *identi
 	o.log.Warn("request refused: "+reason, "caller", id.String(), "source", id.Source, "path", r.URL.Path)
 	w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", error_description="`+reason+`"`)
 	writeError(w, http.StatusUnauthorized, "unauthorized: "+reason)
-}
-
-// headerQuotedString makes s safe inside a WWW-Authenticate quoted-string
-// (RFC 6750 §3: no double quote, no backslash).
-func headerQuotedString(s string) string {
-	return strings.NewReplacer(`"`, "", `\`, "").Replace(s)
 }
 
 // bearerToken is the credential of an Authorization: Bearer header, its scheme
@@ -319,4 +297,11 @@ func validateHTTPS(baseURL string) error {
 	default:
 		return fmt.Errorf("oauth: base URL scheme must be http or https: %s", baseURL)
 	}
+}
+
+// writeError is a refusal as the REST API's JSON error body.
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

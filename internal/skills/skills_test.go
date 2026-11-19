@@ -437,27 +437,19 @@ func TestMetadataTags(t *testing.T) {
 	assert.Equal(t, map[string]string{"name": "a"}, scalars(frontmatter("---\nname: a\nmetadata:\n  tags: x\n---\n")), "metadata stays out of the scalar fields")
 }
 
-func TestRequireReadableGatesPrivateRepositoriesOnThePerson(t *testing.T) {
+func TestRequireReadableRefusesPrivateRepositories(t *testing.T) {
 	ts, hits := fakeGitHub(t)
 	r := NewResolver(ts.URL, StaticToken("secret"), nil, nil)
 	ctx := context.Background()
 	private := "https://github.com/giantswarm/private-skills"
 
-	require.NoError(t, r.RequireReadable(ctx, "https://github.com/giantswarm/agent-skills", ""), "a public repository is everyone's")
-	require.NoError(t, r.RequireReadable(ctx, private, "alice"))
-	for _, login := range []string{"bob", "carol"} {
-		err := r.RequireReadable(ctx, private, login)
-		require.ErrorIs(t, err, ErrNotReadable, login)
-		assert.Contains(t, err.Error(), login)
-		assert.Contains(t, err.Error(), private)
-	}
-	err := r.RequireReadable(ctx, private, "")
-	require.ErrorIs(t, err, ErrNotReadable, "an unknown person cannot be checked, so a private repository is refused")
-	assert.Contains(t, err.Error(), "you cannot read")
+	require.NoError(t, r.RequireReadable(ctx, "https://github.com/giantswarm/agent-skills"), "a public repository is everyone's")
+	err := r.RequireReadable(ctx, private)
+	require.ErrorIs(t, err, ErrNotReadable, "a private repository is checked as the person, with RequireReadableAs")
+	assert.Contains(t, err.Error(), private)
 
 	before := *hits
-	require.NoError(t, r.RequireReadable(ctx, private, "Alice"), "logins are case-insensitive")
-	require.ErrorIs(t, r.RequireReadable(ctx, private, "bob"), ErrNotReadable)
+	require.ErrorIs(t, r.RequireReadable(ctx, "https://github.com/giantswarm/Private-Skills"), ErrNotReadable)
 	assert.Equal(t, before, *hits, "answers are cached")
 }
 

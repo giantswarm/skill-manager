@@ -1,7 +1,6 @@
 // Package identity carries the authenticated caller through a request: who
-// the OAuth layer validated (subject, email, groups), their IdP ID token and,
-// with the deprecated forwarded GitHub pair, their GitHub login, which
-// decides whether they may read a private skill repository. A context
+// the OAuth layer validated (subject, email, groups) and their IdP ID token,
+// the subject token of the exchange for their GitHub grant. A context
 // without an identity only exists in tests and in a server that runs without
 // OAuth.
 package identity
@@ -59,7 +58,6 @@ type ctxKey int
 
 const (
 	identityKey ctxKey = iota
-	gitHubKey
 	tokenKey
 )
 
@@ -92,33 +90,11 @@ func FromContext(ctx context.Context) (*Identity, bool) {
 	return id, ok && id != nil
 }
 
-// GitHub is the caller's GitHub identity from the deprecated forwarded GitHub
-// pair: the login GET /user answered for the person's GitHub user token a
-// REST caller (agent-manager) put on the call, and that token.
-type GitHub struct {
-	Login string
-	Token string
-}
-
-// ContextWithGitHub returns ctx carrying the caller's GitHub identity.
-func ContextWithGitHub(ctx context.Context, gh *GitHub) context.Context {
-	if gh == nil || gh.Token == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, gitHubKey, gh)
-}
-
-// GitHubFromContext returns the caller's GitHub identity, if any.
-func GitHubFromContext(ctx context.Context) (*GitHub, bool) {
-	gh, ok := ctx.Value(gitHubKey).(*GitHub)
-	return gh, ok && gh != nil
-}
-
 type serviceKey struct{}
 
 // ContextWithService marks the caller as the platform's own service (the
-// service token agent-manager's migrate sends): no person, so no GitHub
-// login and no person's readability check.
+// service token agent-manager's migrate sends): no person, so no person's
+// readability check.
 func ContextWithService(ctx context.Context) context.Context {
 	return context.WithValue(ctx, serviceKey{}, true)
 }

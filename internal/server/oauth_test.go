@@ -226,10 +226,6 @@ func TestServerConfig(t *testing.T) {
 	}, serverConfig(cfg, pool), "no private-address allowance: the issuer host is covered by the library")
 }
 
-func TestHeaderQuotedString(t *testing.T) {
-	assert.Equal(t, `aud [a b] vs [c]`, headerQuotedString(`aud ["a" b] vs [\c]`))
-}
-
 // TestServerGuardsRESTAndMCPButNotProbes wires OAuth through the assembled
 // server: probes and the OAuth metadata stay open, the API and the MCP
 // endpoint demand a token.

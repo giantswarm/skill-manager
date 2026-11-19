@@ -199,12 +199,16 @@ port: {{ $port }}
 
 {{/*
 "true" when the GitHub token exchange is on: github.enabled and
-github.tokenExchange.tokenEndpoint set. Fails on a token exchange the chart
-cannot run: set while github.enabled is off, without oauth.enabled, without
-an audience, or without a client secret.
+github.tokenExchange.tokenEndpoint set. Fails on github.enabled without the
+token exchange, and on a token exchange the chart cannot run: set while
+github.enabled is off, without oauth.enabled, without an audience, or without
+a client secret.
 */}}
 {{- define "skill-manager.githubTokenExchange" -}}
 {{- $exchange := .Values.github.tokenExchange -}}
+{{- if and .Values.github.enabled (not $exchange.tokenEndpoint) -}}
+{{- fail "github.enabled needs github.tokenExchange: private repositories are checked with the person's grant of the GitHub App, fetched from muster's broker; set github.tokenExchange.tokenEndpoint, audience and existingSecret" -}}
+{{- end -}}
 {{- if $exchange.tokenEndpoint -}}
 {{- if not .Values.github.enabled -}}
 {{- fail "github.tokenExchange.tokenEndpoint is set while github.enabled is false: set github.enabled to check private repositories as the person" -}}
