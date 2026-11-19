@@ -379,7 +379,7 @@
                     "properties": {
                         "allowPrivateIPs": {
                             "type": "boolean",
-                            "description": "Let Dex's JWKS endpoint resolve to a private address when validating forwarded tokens (an in-cluster Dex)."
+                            "description": "Deprecated, no effect: the issuer host of the configured provider may resolve to a private address for its JWKS without it."
                         }
                     }
                 },

@@ -149,13 +149,13 @@ func (f *fakeIdP) idToken(t *testing.T, aud []string, exp time.Time) string {
 
 func (f *fakeIdP) config() OAuthConfig {
 	return OAuthConfig{
-		BaseURL:            "http://localhost:8080",
-		DexIssuerURL:       f.issuer,
-		DexClientID:        "agent-platform",
-		DexClientSecret:    "lab-only",
-		DexCAFile:          f.caFile,
-		TrustedAudiences:   []string{"agent-platform"},
-		SSOAllowPrivateIPs: true,
+		BaseURL:          "http://localhost:8080",
+		DexIssuerURL:     f.issuer,
+		DexClientID:      "agent-platform",
+		DexClientSecret:  "lab-only",
+		DexCAFile:        f.caFile,
+		TrustedAudiences: []string{"agent-platform"},
+		loopbackJWKS:     true,
 	}
 }
 
@@ -355,4 +355,20 @@ func TestAttachIdentityMarksDelegatedCallers(t *testing.T) {
 		require.NotNil(t, seen)
 		require.Equal(t, scenario.delegated, seen.Delegated)
 	}
+}
+
+// newLocalhostTLSServer serves TLS with a certificate that covers the
+// hostname localhost.
+func newLocalhostTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{selfSignedLocalhost(t)}, MinVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// localhostURL is the server's base URL with the hostname localhost.
+func localhostURL(srv *httptest.Server) string {
+	return strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
 }
