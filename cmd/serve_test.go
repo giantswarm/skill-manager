@@ -117,6 +117,14 @@ func TestServeServiceToken(t *testing.T) {
 	assert.ErrorContains(t, err, "--enable-oauth", "a service token without OAuth guards nothing")
 }
 
+// The JWKS hosts allowed to resolve privately reach the OAuth configuration.
+func TestServeAllowPrivateIPJWKSHosts(t *testing.T) {
+	t.Setenv("SSO_ALLOW_PRIVATE_IP_JWKS_HOSTS", "keys.internal.example, jwks.internal.example")
+	cfg, err := parse(t, "--enable-oauth").serverConfig()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"keys.internal.example", "jwks.internal.example"}, cfg.OAuth.AllowPrivateIPJWKSHosts)
+}
+
 // An environment value that does not parse fails the start, naming it.
 func TestServeRefusesUnparsableEnvironment(t *testing.T) {
 	t.Setenv("SKILL_MANAGER_OAUTH_ENABLED", "yes please")
