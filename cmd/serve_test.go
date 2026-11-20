@@ -117,6 +117,14 @@ func TestServeServiceToken(t *testing.T) {
 	assert.ErrorContains(t, err, "--enable-oauth", "a service token without OAuth guards nothing")
 }
 
+// The JWKS hosts allowed to resolve privately reach the OAuth configuration.
+func TestServeAllowPrivateIPJWKSHosts(t *testing.T) {
+	t.Setenv("SSO_ALLOW_PRIVATE_IP_JWKS_HOSTS", "keys.internal.example, jwks.internal.example")
+	cfg, err := parse(t, "--enable-oauth").serverConfig()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"keys.internal.example", "jwks.internal.example"}, cfg.OAuth.AllowPrivateIPJWKSHosts)
+}
+
 // An environment value that does not parse fails the start, naming it.
 func TestServeRefusesUnparsableEnvironment(t *testing.T) {
 	t.Setenv("SKILL_MANAGER_OAUTH_ENABLED", "yes please")
@@ -162,22 +170,23 @@ func parseServe(t *testing.T) (*serveOptions, error) {
 
 func TestWarnDeprecatedOAuthOptions(t *testing.T) {
 	tests := []struct {
-		name             string
-		allowPrivateURLs bool
-		wantWarning      bool
+		name     string
+		options  serveOptions
+		wantWarn string
 	}{
-		{name: "allow-private-oauth-urls set", allowPrivateURLs: true, wantWarning: true},
-		{name: "allow-private-oauth-urls unset"},
+		{name: "allow-private-oauth-urls set", options: serveOptions{dexAllowPrivateIP: true}, wantWarn: "--allow-private-oauth-urls (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS) has no effect"},
+		{name: "sso-allow-private-ips set", options: serveOptions{ssoAllowPrivateIPs: true}, wantWarn: "--sso-allow-private-ips (SSO_ALLOW_PRIVATE_IPS) has no effect"},
+		{name: "none set"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var output bytes.Buffer
-			warnDeprecatedOAuthOptions(&serveOptions{dexAllowPrivateIP: tc.allowPrivateURLs}, slog.New(slog.NewTextHandler(&output, nil)))
-			if !tc.wantWarning {
+			warnDeprecatedOAuthOptions(&tc.options, slog.New(slog.NewTextHandler(&output, nil)))
+			if tc.wantWarn == "" {
 				assert.Empty(t, output.String())
 				return
 			}
-			assert.Contains(t, output.String(), "--allow-private-oauth-urls (SKILL_MANAGER_OAUTH_ALLOW_PRIVATE_URLS) has no effect")
+			assert.Contains(t, output.String(), tc.wantWarn)
 		})
 	}
 }

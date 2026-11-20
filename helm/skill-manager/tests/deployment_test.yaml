@@ -257,3 +257,38 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: github.tokenExchange.existingSecret or github.tokenExchange.clientSecret is required with github.tokenExchange.tokenEndpoint
+
+  - it: lists the JWKS hosts other than the issuer's that may resolve privately
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+        sso:
+          allowPrivateIPJWKSHosts:
+            - keys.internal.example
+            - jwks.internal.example
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --sso-allow-private-ip-jwks-hosts=keys.internal.example,jwks.internal.example
+
+  - it: renders no JWKS host list by default
+    set:
+      oauth:
+        enabled: true
+        existingSecret: platform-oauth
+      global:
+        domain: example.com
+        identity:
+          issuerUrl: https://dex.example.com
+          clientId: platform-client
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          any: true
+          content: --sso-allow-private-ip-jwks-hosts

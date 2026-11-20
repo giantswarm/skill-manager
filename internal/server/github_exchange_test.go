@@ -82,12 +82,12 @@ func TestGitHubExchange(t *testing.T) {
 				}
 				t.Errorf("unexpected request %s: credentials never follow a redirect", r.URL.Path)
 			})
-			upstream := httptest.NewTLSServer(handler)
+			upstream := newLocalhostTLSServer(t, handler)
 			defer upstream.Close()
 			client := upstream.Client()
 			client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 			var logs bytes.Buffer
-			configuration := GitHubExchangeConfig{TokenEndpoint: upstream.URL + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app", Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			configuration := GitHubExchangeConfig{TokenEndpoint: localhostURL(upstream) + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app", Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 			ctx := identity.ContextWith(t.Context(), &identity.Identity{Subject: "alice", Delegated: scenario == "delegated identity"})
 			switch scenario {
 			case "delegated actor":
@@ -169,4 +169,19 @@ func TestGitHubExchangeClientID(t *testing.T) {
 	require.Equal(t, "from-file", id)
 	_, err = GitHubExchangeConfig{ClientIDFile: filepath.Join(t.TempDir(), "absent")}.resolveClientID()
 	require.Error(t, err)
+}
+
+func TestGitHubExchangeRefusesIPLiteralPrivateEndpoint(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer upstream.Close()
+	secretFile := filepath.Join(t.TempDir(), "client-secret")
+	require.NoError(t, os.WriteFile(secretFile, []byte("fixture-secret"), 0o600))
+	configuration := GitHubExchangeConfig{TokenEndpoint: upstream.URL + "/token", ClientID: "manager-client", ClientSecretFile: secretFile, Audience: "manager-app"}
+	ctx := identity.ContextWithToken(identity.ContextWith(t.Context(), &identity.Identity{Subject: "alice"}), personToken)
+
+	result, err := newGitHubExchange(configuration, upstream.Client()).Token(ctx)
+	require.Error(t, err)
+	require.Empty(t, result)
+	require.Zero(t, requests, "the endpoint is refused before any request")
 }
