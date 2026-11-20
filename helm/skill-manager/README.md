@@ -1,5 +1,8 @@
 # skill-manager
 
+CIMD is enabled by default. DCR is deprecated by MCP 2026-07-28 and remains a
+compatibility fallback; see the [OAuth registration guide](../../docs/oauth-client-registration.md).
+
 Owns the Agent Platform's skill sources, lists their skills and pins skills and plugins to commits, as one MCP server behind muster and a REST API
 
 **Homepage:** <https://github.com/giantswarm/skill-manager>
