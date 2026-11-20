@@ -223,13 +223,14 @@ func TestServerConfig(t *testing.T) {
 		AllowPublicClientRegistration: true,
 	}
 	assert.Equal(t, &oauth.ServerConfig{
-		Issuer:                        "https://sm.example.com",
-		AllowRefreshTokenRotation:     true,
-		AllowPublicClientRegistration: true,
-		MaxClientsPerIP:               10,
-		TrustedAudiences:              []string{"agent-platform", "kubernetes"},
-		AllowPrivateIPJWKSHosts:       []string{"keys.internal.example"},
-		JWKSRootCAs:                   pool,
+		EnableClientIDMetadataDocuments: true,
+		Issuer:                          "https://sm.example.com",
+		AllowRefreshTokenRotation:       true,
+		AllowPublicClientRegistration:   true,
+		MaxClientsPerIP:                 10,
+		TrustedAudiences:                []string{"agent-platform", "kubernetes"},
+		AllowPrivateIPJWKSHosts:         []string{"keys.internal.example"},
+		JWKSRootCAs:                     pool,
 	}, serverConfig(cfg, pool))
 }
 
