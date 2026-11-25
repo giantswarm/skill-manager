@@ -192,6 +192,31 @@ muster:
     description: Skill sources of this installation, their skills and the pins agents mount them by, for the Agent Platform
     # -- Extra labels on the MCPServer CR.
     labels: {}  # @schema additionalProperties: true
+    # -- The connector's tool approval, rendered as the MCPServer's
+    # `spec.approval`. The chart writes out every tool of this release
+    # explicitly (the "Allow all" preset: it is one of the platform's own
+    # management servers, whose tools the Dev Portal's pages call as the
+    # signed-in person and agents use freely on a trusted platform; agent
+    # callers are asked by muster's floors and the governance mode (`governance`
+    # in agent-platform), not by these settings; an installation tightens a tool
+    # here (Ask or Block)), so the connector arrives reviewed. `rule` is what a
+    # tool without its own entry gets, new tools included. Values are Allow |
+    # Ask | Block (Block hides the tool); `rule` is Allow | Ask. An installation
+    # overrides per tool in its values. `null` renders none (the connector then
+    # runs every tool, shown as not reviewed); `{}` does not, Helm merges it
+    # into this default. Needs a muster whose MCPServer CRD carries
+    # `spec.approval` (an older CRD drops the field). See
+    # https://docs.giantswarm.io/overview/agent-platform/governing-tool-calls/
+    approval:
+      # @schema enum: [Allow, Ask]
+      rule: Allow
+      # @schema maxProperties: 512; additionalProperties: {type: string, enum: [Allow, Ask, Block]}
+      tools:
+        list_skill_sources: Allow  # @schema enum: [Allow, Ask, Block]
+        list_skills: Allow  # @schema enum: [Allow, Ask, Block]
+        resolve_skills: Allow  # @schema enum: [Allow, Ask, Block]
+        get_skill: Allow  # @schema enum: [Allow, Ask, Block]
+        get_skill_file: Allow  # @schema enum: [Allow, Ask, Block]
     # -- How long muster waits for a tool's answer, in seconds (the
     # MCPServer's `spec.timeout`, 1 to 300): muster's default.
     timeout: 30  # @schema type: integer; minimum: 1; maximum: 300
