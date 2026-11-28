@@ -108,3 +108,59 @@ tests:
           existingSecret: skill-manager-github-exchange
     asserts:
       - failedTemplate: {}
+
+  - it: sets the tool approval explicitly, the "Allow all" preset
+    asserts:
+      - equal:
+          path: spec.approval.rule
+          value: Allow
+      - equal:
+          path: spec.approval.tools.list_skills
+          value: Allow
+      - equal:
+          path: spec.approval.tools.get_skill_file
+          value: Allow
+
+  - it: renders an installation's override of one tool
+    set:
+      muster:
+        mcpServer:
+          approval:
+            tools:
+              resolve_skills: Ask
+    asserts:
+      - equal:
+          path: spec.approval.tools.resolve_skills
+          value: Ask
+      - equal:
+          path: spec.approval.tools.list_skills
+          value: Allow
+
+  - it: renders no approval when it is null
+    set:
+      muster:
+        mcpServer:
+          approval: null
+    asserts:
+      - notExists:
+          path: spec.approval
+
+  - it: renders a rule of Block, which hides and refuses every tool without its own entry
+    set:
+      muster:
+        mcpServer:
+          approval:
+            rule: Block
+    asserts:
+      - equal:
+          path: spec.approval.rule
+          value: Block
+
+  - it: refuses a rule the CRD does not allow
+    set:
+      muster:
+        mcpServer:
+          approval:
+            rule: Deny
+    asserts:
+      - failedTemplate: {}
